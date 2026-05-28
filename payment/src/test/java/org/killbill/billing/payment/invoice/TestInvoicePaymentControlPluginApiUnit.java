@@ -21,8 +21,15 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 
+import java.util.UUID;
+
+import org.killbill.billing.ObjectType;
 import org.killbill.billing.account.api.AccountInternalApi;
+import org.killbill.billing.callcontext.InternalTenantContext;
+import org.killbill.billing.customfield.CustomFieldInternalApi;
+import org.killbill.billing.invoice.api.Invoice;
 import org.killbill.billing.invoice.api.InvoiceInternalApi;
+import org.killbill.billing.invoice.api.InvoiceItem;
 import org.killbill.billing.payment.PaymentTestSuiteNoDB;
 import org.killbill.billing.payment.api.TransactionStatus;
 import org.killbill.billing.payment.dao.PaymentDao;
@@ -32,6 +39,7 @@ import org.killbill.billing.payment.retry.BaseRetryService.RetryServiceScheduler
 import org.killbill.billing.util.api.TagUserApi;
 import org.killbill.billing.util.callcontext.InternalCallContextFactory;
 import org.killbill.billing.util.config.definition.PaymentConfig;
+import org.killbill.billing.util.customfield.CustomField;
 import org.killbill.clock.Clock;
 import org.mockito.Mockito;
 import org.testng.Assert;
@@ -40,6 +48,10 @@ import org.testng.annotations.Test;
 public class TestInvoicePaymentControlPluginApiUnit extends PaymentTestSuiteNoDB {
 
     private InvoicePaymentControlPluginApi createInvoicePaymentControlApi() {
+        return createInvoicePaymentControlApi(Mockito.mock(CustomFieldInternalApi.class));
+    }
+
+    private InvoicePaymentControlPluginApi createInvoicePaymentControlApi(final CustomFieldInternalApi customFieldApi) {
         final PaymentConfig paymentConfig = Mockito.mock(PaymentConfig.class);
         final InvoiceInternalApi internalApi = Mockito.mock(InvoiceInternalApi.class);
         final TagUserApi tagUserApi = Mockito.mock(TagUserApi.class);
@@ -58,7 +70,8 @@ public class TestInvoicePaymentControlPluginApiUnit extends PaymentTestSuiteNoDB
                                                   retryServiceScheduler,
                                                   contextFactory,
                                                   clock,
-                                                  accountInternalApi);
+                                                  accountInternalApi,
+                                                  customFieldApi);
     }
 
     private Collection<PaymentTransactionModelDao> createPaymentTransactionModelDao(final TransactionStatus... modelDaoAvailableStatuses) {
@@ -99,5 +112,113 @@ public class TestInvoicePaymentControlPluginApiUnit extends PaymentTestSuiteNoDB
 
         result = api.getNumberAttemptsInState(Collections.emptyList(), TransactionStatus.SUCCESS);
         Assert.assertEquals(result, 0);
+    }
+
+    // Regression test for https://github.com/killbill/killbill/issues/277:
+    // when the invoice items all map to a single subscription that carries an
+    // OVERRIDE_PAYMENT_METHOD_ID custom field, the override paymentMethodId is returned.
+    @Test(groups = "fast")
+    public void testPaymentMethodOverride_singleSubscription() {
+        final UUID subscriptionId = UUID.randomUUID();
+        final UUID bundleId = UUID.randomUUID();
+        final UUID overridePaymentMethodId = UUID.randomUUID();
+
+        final InvoiceItem item1 = Mockito.mock(InvoiceItem.class);
+        Mockito.when(item1.getSubscriptionId()).thenReturn(subscriptionId);
+        Mockito.when(item1.getBundleId()).thenReturn(bundleId);
+        final InvoiceItem item2 = Mockito.mock(InvoiceItem.class);
+        Mockito.when(item2.getSubscriptionId()).thenReturn(subscriptionId);
+        Mockito.when(item2.getBundleId()).thenReturn(bundleId);
+
+        final Invoice invoice = Mockito.mock(Invoice.class);
+        Mockito.when(invoice.getInvoiceItems()).thenReturn(java.util.List.of(item1, item2));
+
+        final CustomField overrideField = Mockito.mock(CustomField.class);
+        Mockito.when(overrideField.getFieldName()).thenReturn(InvoicePaymentControlPluginApi.OVERRIDE_PAYMENT_METHOD_FIELD_NAME);
+        Mockito.when(overrideField.getFieldValue()).thenReturn(overridePaymentMethodId.toString());
+
+        final CustomFieldInternalApi customFieldApi = Mockito.mock(CustomFieldInternalApi.class);
+        Mockito.when(customFieldApi.getCustomFieldsForObject(Mockito.eq(subscriptionId), Mockito.eq(ObjectType.SUBSCRIPTION), Mockito.any(InternalTenantContext.class)))
+               .thenReturn(java.util.List.of(overrideField));
+
+        final InvoicePaymentControlPluginApi api = createInvoicePaymentControlApi(customFieldApi);
+        final UUID result = api.getPaymentMethodOverride(invoice, Mockito.mock(InternalTenantContext.class));
+        Assert.assertEquals(result, overridePaymentMethodId);
+    }
+
+    // When the subscription has no override but the bundle does, the bundle override is honored.
+    @Test(groups = "fast")
+    public void testPaymentMethodOverride_bundleFallback() {
+        final UUID subscriptionId = UUID.randomUUID();
+        final UUID bundleId = UUID.randomUUID();
+        final UUID overridePaymentMethodId = UUID.randomUUID();
+
+        final InvoiceItem item = Mockito.mock(InvoiceItem.class);
+        Mockito.when(item.getSubscriptionId()).thenReturn(subscriptionId);
+        Mockito.when(item.getBundleId()).thenReturn(bundleId);
+
+        final Invoice invoice = Mockito.mock(Invoice.class);
+        Mockito.when(invoice.getInvoiceItems()).thenReturn(java.util.List.of(item));
+
+        final CustomField overrideField = Mockito.mock(CustomField.class);
+        Mockito.when(overrideField.getFieldName()).thenReturn(InvoicePaymentControlPluginApi.OVERRIDE_PAYMENT_METHOD_FIELD_NAME);
+        Mockito.when(overrideField.getFieldValue()).thenReturn(overridePaymentMethodId.toString());
+
+        final CustomFieldInternalApi customFieldApi = Mockito.mock(CustomFieldInternalApi.class);
+        // No subscription-level override:
+        Mockito.when(customFieldApi.getCustomFieldsForObject(Mockito.eq(subscriptionId), Mockito.eq(ObjectType.SUBSCRIPTION), Mockito.any(InternalTenantContext.class)))
+               .thenReturn(Collections.emptyList());
+        // Bundle-level override present:
+        Mockito.when(customFieldApi.getCustomFieldsForObject(Mockito.eq(bundleId), Mockito.eq(ObjectType.BUNDLE), Mockito.any(InternalTenantContext.class)))
+               .thenReturn(java.util.List.of(overrideField));
+
+        final InvoicePaymentControlPluginApi api = createInvoicePaymentControlApi(customFieldApi);
+        final UUID result = api.getPaymentMethodOverride(invoice, Mockito.mock(InternalTenantContext.class));
+        Assert.assertEquals(result, overridePaymentMethodId);
+    }
+
+    // When the invoice contains items from multiple subscriptions and multiple bundles,
+    // we cannot pick a single override safely => no override applied.
+    @Test(groups = "fast")
+    public void testPaymentMethodOverride_multipleSubscriptionsAndBundles_noOverride() {
+        final InvoiceItem item1 = Mockito.mock(InvoiceItem.class);
+        Mockito.when(item1.getSubscriptionId()).thenReturn(UUID.randomUUID());
+        Mockito.when(item1.getBundleId()).thenReturn(UUID.randomUUID());
+        final InvoiceItem item2 = Mockito.mock(InvoiceItem.class);
+        Mockito.when(item2.getSubscriptionId()).thenReturn(UUID.randomUUID());
+        Mockito.when(item2.getBundleId()).thenReturn(UUID.randomUUID());
+
+        final Invoice invoice = Mockito.mock(Invoice.class);
+        Mockito.when(invoice.getInvoiceItems()).thenReturn(java.util.List.of(item1, item2));
+
+        final CustomFieldInternalApi customFieldApi = Mockito.mock(CustomFieldInternalApi.class);
+        final InvoicePaymentControlPluginApi api = createInvoicePaymentControlApi(customFieldApi);
+        final UUID result = api.getPaymentMethodOverride(invoice, Mockito.mock(InternalTenantContext.class));
+        Assert.assertNull(result);
+        Mockito.verifyNoInteractions(customFieldApi);
+    }
+
+    // Malformed UUID value in the custom field must not blow up.
+    @Test(groups = "fast")
+    public void testPaymentMethodOverride_malformedValueIsIgnored() {
+        final UUID subscriptionId = UUID.randomUUID();
+        final InvoiceItem item = Mockito.mock(InvoiceItem.class);
+        Mockito.when(item.getSubscriptionId()).thenReturn(subscriptionId);
+        Mockito.when(item.getBundleId()).thenReturn(UUID.randomUUID());
+
+        final Invoice invoice = Mockito.mock(Invoice.class);
+        Mockito.when(invoice.getInvoiceItems()).thenReturn(java.util.List.of(item));
+
+        final CustomField overrideField = Mockito.mock(CustomField.class);
+        Mockito.when(overrideField.getFieldName()).thenReturn(InvoicePaymentControlPluginApi.OVERRIDE_PAYMENT_METHOD_FIELD_NAME);
+        Mockito.when(overrideField.getFieldValue()).thenReturn("not-a-uuid");
+
+        final CustomFieldInternalApi customFieldApi = Mockito.mock(CustomFieldInternalApi.class);
+        Mockito.when(customFieldApi.getCustomFieldsForObject(Mockito.eq(subscriptionId), Mockito.eq(ObjectType.SUBSCRIPTION), Mockito.any(InternalTenantContext.class)))
+               .thenReturn(java.util.List.of(overrideField));
+
+        final InvoicePaymentControlPluginApi api = createInvoicePaymentControlApi(customFieldApi);
+        final UUID result = api.getPaymentMethodOverride(invoice, Mockito.mock(InternalTenantContext.class));
+        Assert.assertNull(result);
     }
 }

@@ -42,6 +42,7 @@ import org.killbill.billing.account.api.AccountInternalApi;
 import org.killbill.billing.callcontext.InternalCallContext;
 import org.killbill.billing.callcontext.InternalTenantContext;
 import org.killbill.billing.catalog.api.Currency;
+import org.killbill.billing.customfield.CustomFieldInternalApi;
 import org.killbill.billing.control.plugin.api.OnFailurePaymentControlResult;
 import org.killbill.billing.control.plugin.api.OnSuccessPaymentControlResult;
 import org.killbill.billing.control.plugin.api.PaymentApiType;
@@ -75,6 +76,7 @@ import org.killbill.billing.util.api.TagUserApi;
 import org.killbill.billing.util.callcontext.CallContext;
 import org.killbill.billing.util.callcontext.InternalCallContextFactory;
 import org.killbill.billing.util.config.definition.PaymentConfig;
+import org.killbill.billing.util.customfield.CustomField;
 import org.killbill.billing.util.tag.ControlTagType;
 import org.killbill.billing.util.tag.Tag;
 import org.killbill.clock.Clock;
@@ -89,6 +91,11 @@ public final class InvoicePaymentControlPluginApi implements PaymentControlPlugi
     public static final String CREATED_BY = "InvoicePaymentControlPluginApi";
 
     public static final String PLUGIN_NAME = "__INVOICE_PAYMENT_CONTROL_PLUGIN__";
+
+    // Custom field name used to register a paymentMethodId override on either a SUBSCRIPTION or a BUNDLE.
+    // When set, and when the invoice items being paid all map to that single subscription/bundle, the
+    // payment will be routed through the overridden paymentMethodId instead of the account default. See #277.
+    public static final String OVERRIDE_PAYMENT_METHOD_FIELD_NAME = "OVERRIDE_PAYMENT_METHOD_ID";
 
     private static final String PROP_IPCD_INVOICE_ID = "IPCD_INVOICE_ID";
 
@@ -106,6 +113,7 @@ public final class InvoicePaymentControlPluginApi implements PaymentControlPlugi
     private final InternalCallContextFactory internalCallContextFactory;
     private final Clock clock;
     private final AccountInternalApi accountApi;
+    private final CustomFieldInternalApi customFieldApi;
 
     private final Logger log = LoggerFactory.getLogger(InvoicePaymentControlPluginApi.class);
 
@@ -115,7 +123,8 @@ public final class InvoicePaymentControlPluginApi implements PaymentControlPlugi
                                           final PaymentDao paymentDao, final InvoicePaymentControlDao invoicePaymentControlDao,
                                           @Named(PaymentModule.RETRYABLE_NAMED) final RetryServiceScheduler retryServiceScheduler,
                                           final InternalCallContextFactory internalCallContextFactory, final Clock clock,
-                                          final AccountInternalApi accountApi) {
+                                          final AccountInternalApi accountApi,
+                                          final CustomFieldInternalApi customFieldApi) {
         this.paymentConfig = paymentConfig;
         this.invoiceApi = invoiceApi;
         this.tagApi = tagApi;
@@ -125,6 +134,7 @@ public final class InvoicePaymentControlPluginApi implements PaymentControlPlugi
         this.internalCallContextFactory = internalCallContextFactory;
         this.clock = clock;
         this.accountApi = accountApi;
+        this.customFieldApi = customFieldApi;
     }
 
     @Override
@@ -329,6 +339,65 @@ public final class InvoicePaymentControlPluginApi implements PaymentControlPlugi
         }
     }
 
+    /**
+     * Returns the paymentMethodId override for the given invoice, or {@code null} if none applies.
+     *
+     * Behaviour (see issue #277): the override is honored only when all line items with a non-null
+     * subscriptionId (resp. bundleId) point to a single subscription (resp. bundle). The
+     * subscription-level override is preferred over the bundle-level override. If the items reference
+     * multiple subscriptions/bundles, no override is applied (the invoice keeps the account default).
+     */
+    @VisibleForTesting
+    UUID getPaymentMethodOverride(final Invoice invoice, final InternalTenantContext internalContext) {
+        if (customFieldApi == null) {
+            return null;
+        }
+        final List<InvoiceItem> items = invoice.getInvoiceItems();
+        if (items == null || items.isEmpty()) {
+            return null;
+        }
+
+        final java.util.Set<UUID> subscriptionIds = items.stream()
+                                                         .map(InvoiceItem::getSubscriptionId)
+                                                         .filter(Objects::nonNull)
+                                                         .collect(Collectors.toSet());
+        if (subscriptionIds.size() == 1) {
+            final UUID override = lookupOverride(subscriptionIds.iterator().next(), ObjectType.SUBSCRIPTION, internalContext);
+            if (override != null) {
+                return override;
+            }
+        }
+
+        final java.util.Set<UUID> bundleIds = items.stream()
+                                                   .map(InvoiceItem::getBundleId)
+                                                   .filter(Objects::nonNull)
+                                                   .collect(Collectors.toSet());
+        if (bundleIds.size() == 1) {
+            return lookupOverride(bundleIds.iterator().next(), ObjectType.BUNDLE, internalContext);
+        }
+
+        return null;
+    }
+
+    private UUID lookupOverride(final UUID objectId, final ObjectType objectType, final InternalTenantContext internalContext) {
+        final List<CustomField> fields = customFieldApi.getCustomFieldsForObject(objectId, objectType, internalContext);
+        if (fields == null || fields.isEmpty()) {
+            return null;
+        }
+        for (final CustomField cf : fields) {
+            if (OVERRIDE_PAYMENT_METHOD_FIELD_NAME.equals(cf.getFieldName()) && cf.getFieldValue() != null) {
+                try {
+                    return UUID.fromString(cf.getFieldValue());
+                } catch (final IllegalArgumentException e) {
+                    log.warn("Ignoring malformed {} custom field value '{}' on {} '{}'",
+                             OVERRIDE_PAYMENT_METHOD_FIELD_NAME, cf.getFieldValue(), objectType, objectId);
+                    return null;
+                }
+            }
+        }
+        return null;
+    }
+
     private UUID getInvoiceId(final Iterable<PluginProperty> pluginProperties) throws PaymentControlApiException {
         final PluginProperty invoiceProp = getPluginProperty(pluginProperties, PROP_IPCD_INVOICE_ID);
         if (invoiceProp == null ||
@@ -422,6 +491,16 @@ public final class InvoicePaymentControlPluginApi implements PaymentControlPlugi
                                                 paymentControlPluginContext.getTransactionExternalKey(),
                                                 paymentControlPluginContext.getCreatedDate(),
                                                 internalContext);
+
+            // Resolve per-subscription/bundle paymentMethod override (see #277). When the invoice items
+            // all map to a single subscription (or a single bundle) carrying an OVERRIDE_PAYMENT_METHOD_ID
+            // custom field, route this payment through that paymentMethodId instead of the account default.
+            final UUID overridePaymentMethodId = getPaymentMethodOverride(invoice, internalContext);
+            if (overridePaymentMethodId != null && !overridePaymentMethodId.equals(paymentControlPluginContext.getPaymentMethodId())) {
+                log.info("Overriding paymentMethodId for invoiceId='{}': default='{}', override='{}'",
+                         invoice.getId(), paymentControlPluginContext.getPaymentMethodId(), overridePaymentMethodId);
+                return new DefaultPriorPaymentControlResult(false, overridePaymentMethodId, null, requestedAmount, null, null);
+            }
 
             return new DefaultPriorPaymentControlResult(false, requestedAmount);
 
