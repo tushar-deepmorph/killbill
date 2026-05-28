@@ -29,6 +29,7 @@ import javax.inject.Inject;
 
 import org.joda.time.DateTime;
 import org.joda.time.DateTimeZone;
+import org.killbill.billing.ObjectType;
 import org.killbill.billing.catalog.api.Currency;
 import org.skife.jdbi.v2.Handle;
 import org.skife.jdbi.v2.IDBI;
@@ -91,6 +92,63 @@ public class InvoicePaymentControlDao {
             @Override
             public Void withHandle(final Handle handle) throws Exception {
                 handle.execute("update invoice_payment_control_plugin_auto_pay_off set is_active = FALSE where account_id = ?", accountId.toString());
+                return null;
+            }
+        });
+    }
+
+    // -- Per-subscription / per-bundle payment method overrides (issue #277) --
+
+    public void setPaymentMethodOverride(final PluginPaymentMethodOverrideModelDao data) {
+        dbi.withHandle(new HandleCallback<Void>() {
+            @Override
+            public Void withHandle(final Handle handle) throws Exception {
+                // Soft-delete any existing override row for that (account, object) tuple so the
+                // most-recent override wins without relying on UNIQUE/UPSERT support across DBs.
+                handle.execute("update invoice_payment_control_plugin_pm_override set is_active = FALSE " +
+                               "where account_id = ? and payment_object_type = ? and payment_object_id = ?",
+                               data.getAccountId().toString(),
+                               data.getPaymentObjectType().name(),
+                               data.getPaymentObjectId().toString());
+                handle.execute("insert into invoice_payment_control_plugin_pm_override " +
+                               "(account_id, payment_object_type, payment_object_id, payment_method_id, created_by, created_date) values " +
+                               "(?,?,?,?,?,?)",
+                               data.getAccountId().toString(),
+                               data.getPaymentObjectType().name(),
+                               data.getPaymentObjectId().toString(),
+                               data.getPaymentMethodId().toString(),
+                               data.getCreatedBy(),
+                               data.getCreatedDate());
+                return null;
+            }
+        });
+    }
+
+    public UUID getPaymentMethodOverride(final UUID accountId, final ObjectType objectType, final UUID objectId) {
+        return dbi.withHandle(new HandleCallback<UUID>() {
+            @Override
+            public UUID withHandle(final Handle handle) throws Exception {
+                final List<Map<String, Object>> rows = handle.select(
+                        "select payment_method_id from invoice_payment_control_plugin_pm_override " +
+                        "where account_id = ? and payment_object_type = ? and payment_object_id = ? and is_active = TRUE " +
+                        "order by record_id desc limit 1",
+                        accountId.toString(), objectType.name(), objectId.toString());
+                if (rows.isEmpty()) {
+                    return null;
+                }
+                final Object raw = rows.get(0).get("payment_method_id");
+                return raw != null ? UUID.fromString(raw.toString()) : null;
+            }
+        });
+    }
+
+    public void removePaymentMethodOverride(final UUID accountId, final ObjectType objectType, final UUID objectId) {
+        dbi.withHandle(new HandleCallback<Void>() {
+            @Override
+            public Void withHandle(final Handle handle) throws Exception {
+                handle.execute("update invoice_payment_control_plugin_pm_override set is_active = FALSE " +
+                               "where account_id = ? and payment_object_type = ? and payment_object_id = ?",
+                               accountId.toString(), objectType.name(), objectId.toString());
                 return null;
             }
         });

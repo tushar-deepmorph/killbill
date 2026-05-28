@@ -22,12 +22,14 @@ import java.util.List;
 import java.util.UUID;
 
 import org.joda.time.DateTime;
+import org.killbill.billing.ObjectType;
 import org.killbill.billing.catalog.api.Currency;
 import org.killbill.billing.payment.PaymentTestSuiteWithEmbeddedDB;
 import org.testng.annotations.BeforeClass;
 import org.testng.annotations.Test;
 
 import static org.testng.Assert.assertEquals;
+import static org.testng.Assert.assertNull;
 
 public class TestInvoicePaymentControlDao extends PaymentTestSuiteWithEmbeddedDB {
 
@@ -98,5 +100,59 @@ public class TestInvoicePaymentControlDao extends PaymentTestSuiteWithEmbeddedDB
 
         final List<PluginAutoPayOffModelDao> entries = dao.getAutoPayOffEntry(UUID.randomUUID());
         assertEquals(entries.size(), 0);
+    }
+
+    // -- Per-subscription / per-bundle payment method overrides (issue #277) --
+
+    @Test(groups = "slow")
+    public void testPaymentMethodOverrideSetAndGet() {
+        final UUID accountId = UUID.randomUUID();
+        final UUID subscriptionId = UUID.randomUUID();
+        final UUID paymentMethodId = UUID.randomUUID();
+        final DateTime utcNow = clock.getUTCNow();
+
+        dao.setPaymentMethodOverride(new PluginPaymentMethodOverrideModelDao(accountId, ObjectType.SUBSCRIPTION, subscriptionId, paymentMethodId, "lulu", utcNow));
+
+        assertEquals(dao.getPaymentMethodOverride(accountId, ObjectType.SUBSCRIPTION, subscriptionId), paymentMethodId);
+        // Different object id => no override
+        assertNull(dao.getPaymentMethodOverride(accountId, ObjectType.SUBSCRIPTION, UUID.randomUUID()));
+        // Same id but different object type => no override (type is part of the key)
+        assertNull(dao.getPaymentMethodOverride(accountId, ObjectType.BUNDLE, subscriptionId));
+        // Different account => no override
+        assertNull(dao.getPaymentMethodOverride(UUID.randomUUID(), ObjectType.SUBSCRIPTION, subscriptionId));
+    }
+
+    @Test(groups = "slow")
+    public void testPaymentMethodOverrideIsReplacedOnReset() {
+        final UUID accountId = UUID.randomUUID();
+        final UUID bundleId = UUID.randomUUID();
+        final UUID firstPaymentMethodId = UUID.randomUUID();
+        final UUID secondPaymentMethodId = UUID.randomUUID();
+        final DateTime utcNow = clock.getUTCNow();
+
+        dao.setPaymentMethodOverride(new PluginPaymentMethodOverrideModelDao(accountId, ObjectType.BUNDLE, bundleId, firstPaymentMethodId, "lulu", utcNow));
+        dao.setPaymentMethodOverride(new PluginPaymentMethodOverrideModelDao(accountId, ObjectType.BUNDLE, bundleId, secondPaymentMethodId, "lulu", utcNow));
+
+        // The most-recent override wins; the previous row has been soft-deleted.
+        assertEquals(dao.getPaymentMethodOverride(accountId, ObjectType.BUNDLE, bundleId), secondPaymentMethodId);
+    }
+
+    @Test(groups = "slow")
+    public void testPaymentMethodOverrideRemove() {
+        final UUID accountId = UUID.randomUUID();
+        final UUID subscriptionId = UUID.randomUUID();
+        final UUID paymentMethodId = UUID.randomUUID();
+        final DateTime utcNow = clock.getUTCNow();
+
+        dao.setPaymentMethodOverride(new PluginPaymentMethodOverrideModelDao(accountId, ObjectType.SUBSCRIPTION, subscriptionId, paymentMethodId, "lulu", utcNow));
+        assertEquals(dao.getPaymentMethodOverride(accountId, ObjectType.SUBSCRIPTION, subscriptionId), paymentMethodId);
+
+        dao.removePaymentMethodOverride(accountId, ObjectType.SUBSCRIPTION, subscriptionId);
+        assertNull(dao.getPaymentMethodOverride(accountId, ObjectType.SUBSCRIPTION, subscriptionId));
+    }
+
+    @Test(groups = "slow")
+    public void testPaymentMethodOverrideNoEntry() {
+        assertNull(dao.getPaymentMethodOverride(UUID.randomUUID(), ObjectType.SUBSCRIPTION, UUID.randomUUID()));
     }
 }

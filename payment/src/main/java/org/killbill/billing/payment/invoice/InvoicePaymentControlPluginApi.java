@@ -21,10 +21,12 @@ import java.math.BigDecimal;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
 import java.util.stream.StreamSupport;
@@ -423,6 +425,17 @@ public final class InvoicePaymentControlPluginApi implements PaymentControlPlugi
                                                 paymentControlPluginContext.getCreatedDate(),
                                                 internalContext);
 
+            // Issue #277: if every line item on this invoice belongs to a subscription/bundle that
+            // has been registered with the same per-object payment method override, route the
+            // payment through that override instead of the account default. Conflicting overrides
+            // on the same invoice fall back to the default (the limitation called out in the issue).
+            final UUID overriddenPaymentMethodId = resolvePaymentMethodOverride(invoice);
+            if (overriddenPaymentMethodId != null && !overriddenPaymentMethodId.equals(paymentControlPluginContext.getPaymentMethodId())) {
+                log.info("Routing invoiceId='{}' through paymentMethod override='{}' (account default='{}')",
+                         invoice.getId(), overriddenPaymentMethodId, paymentControlPluginContext.getPaymentMethodId());
+                return new DefaultPriorPaymentControlResult(false, overriddenPaymentMethodId, null, requestedAmount, null, null);
+            }
+
             return new DefaultPriorPaymentControlResult(false, requestedAmount);
 
 
@@ -742,5 +755,71 @@ public final class InvoicePaymentControlPluginApi implements PaymentControlPlugi
     private boolean isAccountAutoPayOff(final UUID accountId, final CallContext callContext) {
         final List<Tag> accountTags = tagApi.getTagsForAccount(accountId, false, callContext);
         return ControlTagType.isAutoPayOff(accountTags.stream().map(Tag::getTagDefinitionId).collect(Collectors.toUnmodifiableList()));
+    }
+
+    /**
+     * Resolve a per-subscription/per-bundle payment method override for the given invoice
+     * (see <a href="https://github.com/killbill/killbill/issues/277">#277</a>).
+     *
+     * The resolution walks every {@link InvoiceItem} on the invoice and, for each item that
+     * is associated to a subscription or bundle, asks the DAO whether an override has been
+     * registered. The subscription-level override wins over a bundle-level override for the
+     * same item. The final override is applied only when every item with an associated
+     * subscription/bundle agrees on the same payment method; conflicting overrides on a
+     * single invoice are logged and the call falls back to the account default.
+     *
+     * @return a non-null UUID when a unified override exists, otherwise null
+     */
+    @VisibleForTesting
+    UUID resolvePaymentMethodOverride(final Invoice invoice) {
+        if (invoice == null || invoice.getInvoiceItems() == null || invoice.getInvoiceItems().isEmpty()) {
+            return null;
+        }
+        final UUID accountId = invoice.getAccountId();
+        final Set<UUID> resolvedOverrides = new HashSet<>();
+        boolean sawItemWithoutOverride = false;
+
+        for (final InvoiceItem item : invoice.getInvoiceItems()) {
+            final UUID subscriptionId = item.getSubscriptionId();
+            final UUID bundleId = item.getBundleId();
+            if (subscriptionId == null && bundleId == null) {
+                // Non-recurring items (e.g. account-level credits/adjustments) cannot be routed
+                // through a subscription/bundle override; treat them as the default.
+                sawItemWithoutOverride = true;
+                continue;
+            }
+
+            UUID override = null;
+            if (subscriptionId != null) {
+                override = controlDao.getPaymentMethodOverride(accountId, ObjectType.SUBSCRIPTION, subscriptionId);
+            }
+            if (override == null && bundleId != null) {
+                override = controlDao.getPaymentMethodOverride(accountId, ObjectType.BUNDLE, bundleId);
+            }
+
+            if (override == null) {
+                sawItemWithoutOverride = true;
+            } else {
+                resolvedOverrides.add(override);
+            }
+        }
+
+        if (resolvedOverrides.isEmpty()) {
+            return null;
+        }
+        if (resolvedOverrides.size() > 1) {
+            log.warn("Conflicting paymentMethod overrides on invoiceId='{}' (overrides={}); falling back to account default",
+                     invoice.getId(), resolvedOverrides);
+            return null;
+        }
+        // A unified override only routes payment cleanly when every item agrees. If any item is
+        // unbound to an override, mixing the override with the default would split the invoice
+        // across two payment methods, which is exactly the scenario the issue calls out.
+        if (sawItemWithoutOverride) {
+            log.warn("paymentMethod override on invoiceId='{}' is not unified across all items; falling back to account default",
+                     invoice.getId());
+            return null;
+        }
+        return resolvedOverrides.iterator().next();
     }
 }
