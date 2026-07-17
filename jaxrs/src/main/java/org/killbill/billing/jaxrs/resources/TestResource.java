@@ -18,10 +18,15 @@
 
 package org.killbill.billing.jaxrs.resources;
 
+import java.io.IOException;
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
+import javax.annotation.Nullable;
 import jakarta.inject.Inject;
 import jakarta.inject.Singleton;
 import jakarta.servlet.ServletRequest;
@@ -48,13 +53,18 @@ import org.killbill.billing.jaxrs.util.Context;
 import org.killbill.billing.jaxrs.util.JaxrsUriBuilder;
 import org.killbill.billing.payment.api.InvoicePaymentApi;
 import org.killbill.billing.payment.api.PaymentApi;
+import org.killbill.billing.tenant.api.TenantApiException;
+import org.killbill.billing.tenant.api.TenantKV.TenantKey;
 import org.killbill.billing.tenant.api.TenantUserApi;
 import org.killbill.billing.util.api.AuditUserApi;
 import org.killbill.billing.util.api.CustomFieldUserApi;
 import org.killbill.billing.util.api.RecordIdApi;
 import org.killbill.billing.util.api.TagUserApi;
 import org.killbill.billing.util.cache.CacheControllerDispatcher;
+import org.killbill.billing.util.callcontext.CallContext;
 import org.killbill.billing.util.callcontext.TenantContext;
+import org.killbill.billing.util.clock.TenantAwareClock;
+import org.killbill.billing.util.jackson.ObjectMapper;
 import org.killbill.commons.utils.collect.Iterables;
 import org.killbill.bus.api.BusEvent;
 import org.killbill.bus.api.BusEventWithMetadata;
@@ -70,6 +80,7 @@ import org.slf4j.LoggerFactory;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.core.type.TypeReference;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
@@ -121,6 +132,7 @@ public class TestResource extends JaxRsResourceBase {
     private final TenantUserApi tenantApi;
     private final CatalogUserApi catalogUserApi;
     private final CacheControllerDispatcher cacheControllerDispatcher;
+    private final ObjectMapper perTenantConfigMapper = new ObjectMapper();
 
     @Inject
     public TestResource(final JaxrsUriBuilder uriBuilder, final TagUserApi tagUserApi, final CustomFieldUserApi customFieldUserApi,
@@ -371,9 +383,95 @@ public class TestResource extends JaxRsResourceBase {
     }
 
     private ClockMock getClockMock() {
-        if (!(clock instanceof ClockMock)) {
+        return getClockMock(clock);
+    }
+
+    private static ClockMock getClockMock(final Clock candidateClock) {
+        // The injected clock may be a TenantAwareClock decorating the movable base clock.
+        Clock baseClock = candidateClock;
+        if (baseClock instanceof TenantAwareClock) {
+            baseClock = ((TenantAwareClock) baseClock).getDelegate();
+        }
+        if (!(baseClock instanceof ClockMock)) {
             throw new UnsupportedOperationException("Kill Bill has not been configured to update the time");
         }
-        return (ClockMock) clock;
+        return (ClockMock) baseClock;
+    }
+
+    //
+    // Per-tenant clock manipulation
+    //
+    // Unlike the global clock endpoints above (which move the shared base clock for every tenant), these endpoints
+    // move the clock for the current tenant only, by storing a per-tenant delta (in milliseconds, relative to the
+    // shared base clock) using the existing per-tenant key/value config mechanism.
+    //
+
+    @POST
+    @Path("/clock/tenant")
+    @Produces(APPLICATION_JSON)
+    @Operation(summary = "Set the current time for the current tenant only")
+    @ApiResponses(value = {@ApiResponse(responseCode = "200", description = "successful operation", content = @Content(mediaType = "application/json", schema = @Schema(implementation = ClockResource.class))),
+                           @ApiResponse(responseCode = "400", description = "Invalid time or timezone supplied")})
+    public Response setTenantTestClockTime(@QueryParam(QUERY_REQUESTED_DT) final String requestedClockDate,
+                                           @QueryParam("timeZone") final String timeZoneStr,
+                                           @QueryParam("timeoutSec") @DefaultValue("5") final Long timeoutSec,
+                                           @HeaderParam(HDR_CREATED_BY) final String createdBy,
+                                           @HeaderParam(HDR_REASON) final String reason,
+                                           @HeaderParam(HDR_COMMENT) final String comment,
+                                           @jakarta.ws.rs.core.Context final HttpServletRequest request) throws TenantApiException {
+        final CallContext callContext = context.createCallContextNoAccountId(createdBy, reason, comment, request);
+
+        // Make sure the clock is actually movable (i.e. Kill Bill is in test mode).
+        final ClockMock baseClock = getClockMock();
+
+        final Long deltaMillis;
+        if (requestedClockDate == null) {
+            // No date provided: reset this tenant's clock back to the shared base clock.
+            deltaMillis = null;
+        } else {
+            final DateTime newTime = DATE_TIME_FORMATTER.parseDateTime(requestedClockDate).toDateTime(DateTimeZone.UTC);
+            deltaMillis = newTime.getMillis() - baseClock.getUTCNow().getMillis();
+        }
+
+        setPerTenantClockDelta(deltaMillis, callContext);
+
+        waitForNotificationToComplete(request, timeoutSec);
+
+        return getCurrentTime(timeZoneStr);
+    }
+
+    private void setPerTenantClockDelta(@Nullable final Long deltaMillis, final CallContext callContext) throws TenantApiException {
+        final String perTenantConfigKey = TenantKey.PER_TENANT_CONFIG.toString();
+
+        final List<String> existingValues = tenantApi.getTenantValuesForKey(perTenantConfigKey, callContext);
+        final boolean hasExistingConfig = existingValues != null && !existingValues.isEmpty() && existingValues.get(0) != null;
+
+        final Map<String, String> perTenantConfig = new HashMap<String, String>();
+        if (hasExistingConfig) {
+            try {
+                perTenantConfig.putAll(perTenantConfigMapper.readValue(existingValues.get(0), new TypeReference<Map<String, String>>() {}));
+            } catch (final IOException e) {
+                throw new IllegalStateException("Unable to parse existing per-tenant config", e);
+            }
+        }
+
+        if (deltaMillis == null) {
+            perTenantConfig.remove(TenantAwareClock.PER_TENANT_CLOCK_DELTA_KEY);
+        } else {
+            perTenantConfig.put(TenantAwareClock.PER_TENANT_CLOCK_DELTA_KEY, String.valueOf(deltaMillis.longValue()));
+        }
+
+        final String updatedJson;
+        try {
+            updatedJson = perTenantConfigMapper.writeValueAsString(perTenantConfig);
+        } catch (final IOException e) {
+            throw new IllegalStateException("Unable to serialize per-tenant config", e);
+        }
+
+        if (hasExistingConfig) {
+            tenantApi.updateTenantKeyValue(perTenantConfigKey, updatedJson, callContext);
+        } else {
+            tenantApi.addTenantKeyValue(perTenantConfigKey, updatedJson, callContext);
+        }
     }
 }

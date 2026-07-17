@@ -19,8 +19,11 @@
 package org.killbill.billing.util.glue;
 
 import org.killbill.billing.platform.api.KillbillConfigSource;
+import org.killbill.billing.util.clock.TenantAwareClock;
 import org.killbill.clock.Clock;
 import org.killbill.clock.DefaultClock;
+
+import com.google.inject.name.Names;
 
 public class ClockModule extends KillBillModule {
 
@@ -30,6 +33,8 @@ public class ClockModule extends KillBillModule {
 
     @Override
     protected void configure() {
-        bind(Clock.class).to(DefaultClock.class).asEagerSingleton();
+        // The base (delegate) clock provides the "real" time; TenantAwareClock layers a per-tenant delta on top of it.
+        bind(Clock.class).annotatedWith(Names.named(TenantAwareClock.DELEGATE_CLOCK_NAMED)).to(DefaultClock.class).asEagerSingleton();
+        bind(Clock.class).to(TenantAwareClock.class).asEagerSingleton();
     }
 }

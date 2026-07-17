@@ -37,6 +37,7 @@ import org.killbill.billing.util.account.AccountDateTimeUtils;
 import org.killbill.billing.util.cache.Cachable.CacheType;
 import org.killbill.billing.util.cache.CacheController;
 import org.killbill.billing.util.cache.CacheControllerDispatcher;
+import org.killbill.billing.util.clock.TenantClockContextHolder;
 import org.killbill.billing.util.dao.NonEntityDao;
 import org.killbill.billing.util.entity.dao.TimeZoneAwareEntity;
 import org.killbill.clock.Clock;
@@ -337,6 +338,10 @@ public class InternalCallContextFactory {
     }
 
     private void populateMDCContext(@Nullable final UUID userToken, @Nullable final Long accountRecordId, final Long tenantRecordId) {
+        // Record the current tenant so that the (tenant-aware) Clock can apply the per-tenant delta.
+        // This covers every path that creates an internal context: REST requests, bus events,
+        // notification queue callbacks and background janitor tasks.
+        TenantClockContextHolder.setTenantRecordId(tenantRecordId);
         if (accountRecordId != null) {
             MDC.put(MDC_KB_ACCOUNT_RECORD_ID, String.valueOf(accountRecordId));
         }
