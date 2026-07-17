@@ -78,6 +78,7 @@ import org.killbill.billing.util.optimizer.BusDispatcherOptimizerOn;
 import org.killbill.billing.util.optimizer.BusOptimizer;
 import org.killbill.billing.util.optimizer.BusOptimizerNoop;
 import org.killbill.billing.util.optimizer.BusOptimizerOn;
+import org.killbill.billing.util.clock.TenantAwareClock;
 import org.killbill.clock.Clock;
 import org.killbill.clock.ClockMock;
 import org.killbill.commons.embeddeddb.EmbeddedDB;
@@ -174,7 +175,10 @@ public class KillbillServerModule extends KillbillPlatformModule {
     @Override
     protected void configureClock() {
         if (serverConfig.isTestModeEnabled()) {
-            bind(Clock.class).to(ClockMock.class).asEagerSingleton();
+            // On test deployments the movable ClockMock is the base clock; wrap it so each tenant can have its own
+            // (movable) clock via a per-tenant delta on top of the shared ClockMock.
+            bind(Clock.class).annotatedWith(Names.named(TenantAwareClock.DELEGATE_CLOCK_NAMED)).to(ClockMock.class).asEagerSingleton();
+            bind(Clock.class).to(TenantAwareClock.class).asEagerSingleton();
             bind(TestResource.class).asEagerSingleton();
         } else {
             install(new ClockModule(configSource));

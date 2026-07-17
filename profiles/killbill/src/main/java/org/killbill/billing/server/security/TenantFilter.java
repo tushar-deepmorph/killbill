@@ -43,6 +43,7 @@ import org.killbill.billing.server.listeners.KillbillGuiceListener;
 import org.killbill.billing.tenant.api.Tenant;
 import org.killbill.billing.tenant.api.TenantApiException;
 import org.killbill.billing.tenant.api.TenantUserApi;
+import org.killbill.billing.util.clock.TenantClockContextHolder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -103,13 +104,18 @@ public class TenantFilter implements Filter {
             final Tenant tenant = tenantUserApi.getTenantByApiKey(apiKey);
             request.setAttribute(TENANT, tenant);
 
-            // Create a dummy context, to set the MDC very early for LoggingFilter
+            // Create a dummy context, to set the MDC very early for LoggingFilter.
+            // This also populates the current tenant in TenantClockContextHolder (via InternalCallContextFactory),
+            // so the per-tenant clock delta is applied for the duration of this request.
             context.createTenantContextNoAccountId(request);
 
             chain.doFilter(request, response);
         } catch (final TenantApiException e) {
             // Should never happen since Shiro validated the credentials?
             log.error("Couldn't find the tenant? - should never happen!", e);
+        } finally {
+            // Don't leak the current tenant onto the next request served by this (pooled) thread.
+            TenantClockContextHolder.clear();
         }
     }
 
