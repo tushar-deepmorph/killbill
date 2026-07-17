@@ -34,6 +34,20 @@ public class InternalTenantContext extends TimeAwareContext {
     protected final Long tenantRecordId;
     protected final Long accountRecordId;
 
+    private static final ThreadLocal<InternalTenantContext> threadLocalContext = new ThreadLocal<>();
+
+    public static void setContext(final InternalTenantContext context) {
+        threadLocalContext.set(context);
+    }
+
+    public static InternalTenantContext getContext() {
+        return threadLocalContext.get();
+    }
+
+    public static void clearContext() {
+        threadLocalContext.remove();
+    }
+
     public InternalTenantContext(final Long tenantRecordId,
                                  @Nullable final Long accountRecordId,
                                  @Nullable final DateTimeZone accountTimeZone,
@@ -42,6 +56,7 @@ public class InternalTenantContext extends TimeAwareContext {
         super(accountTimeZone, fixedOffsetTimeZone, referenceDateTime);
         this.tenantRecordId = tenantRecordId;
         this.accountRecordId = accountRecordId;
+        setContext(this);
     }
 
     public InternalTenantContext(final Long defaultTenantRecordId) {

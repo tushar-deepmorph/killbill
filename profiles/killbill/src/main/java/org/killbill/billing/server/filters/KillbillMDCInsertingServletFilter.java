@@ -29,6 +29,7 @@ import org.glassfish.jersey.server.ContainerException;
 import org.glassfish.jersey.server.ContainerRequest;
 import org.glassfish.jersey.server.ContainerResponse;
 import org.glassfish.jersey.server.spi.ContainerResponseWriter;
+import org.killbill.billing.callcontext.InternalTenantContext;
 import org.killbill.commons.request.Request;
 import org.killbill.commons.request.RequestData;
 import org.slf4j.MDC;
@@ -92,11 +93,14 @@ public class KillbillMDCInsertingServletFilter implements ContainerRequestFilter
             MDC.remove(MDC_KB_ACCOUNT_RECORD_ID);
             MDC.remove(MDC_KB_TENANT_RECORD_ID);
             MDC.remove(MDC_KB_USER_TOKEN);
+
+            InternalTenantContext.clearContext();
         }
 
         @Override
         public void failure(final Throwable error) {
             crw.failure(error);
+            InternalTenantContext.clearContext();
         }
 
         @Override

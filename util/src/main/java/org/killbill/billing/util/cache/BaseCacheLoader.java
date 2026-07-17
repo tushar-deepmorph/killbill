@@ -22,7 +22,7 @@ import org.killbill.billing.util.cache.Cachable.CacheType;
 
 public abstract class BaseCacheLoader<K, V> {
 
-    static final String EMPTY_VALUE_PLACEHOLDER = "__#VALEUR!__";
+    public static final String EMPTY_VALUE_PLACEHOLDER = "__#VALEUR!__";
 
     public abstract CacheType getCacheType();
 
