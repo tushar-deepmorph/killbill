@@ -46,6 +46,7 @@ import org.killbill.billing.util.callcontext.CallOrigin;
 import org.killbill.billing.util.callcontext.InternalCallContextFactory;
 import org.killbill.billing.util.callcontext.TenantContext;
 import org.killbill.billing.util.callcontext.UserType;
+import org.killbill.billing.util.clock.TenantClock;
 import org.killbill.billing.util.optimizer.BusOptimizer;
 import org.killbill.bus.api.BusEvent;
 import org.killbill.bus.api.PersistentBus.EventBusException;
@@ -70,6 +71,7 @@ public class DefaultEntitlementService implements EntitlementService {
     private final NotificationQueueService notificationQueueService;
     private final EntitlementUtils entitlementUtils;
     private final InternalCallContextFactory internalCallContextFactory;
+    private final TenantClock tenantClock;
 
     private NotificationQueue entitlementEventQueue;
 
@@ -79,13 +81,15 @@ public class DefaultEntitlementService implements EntitlementService {
                                      final BusOptimizer eventBus,
                                      final NotificationQueueService notificationQueueService,
                                      final EntitlementUtils entitlementUtils,
-                                     final InternalCallContextFactory internalCallContextFactory) {
+                                     final InternalCallContextFactory internalCallContextFactory,
+                                     final TenantClock tenantClock) {
         this.entitlementInternalApi = entitlementInternalApi;
         this.blockingStateDao = blockingStateDao;
         this.eventBus = eventBus;
         this.notificationQueueService = notificationQueueService;
         this.entitlementUtils = entitlementUtils;
         this.internalCallContextFactory = internalCallContextFactory;
+        this.tenantClock = tenantClock;
     }
 
     @Override
@@ -172,7 +176,7 @@ public class DefaultEntitlementService implements EntitlementService {
         try {
             final NotificationQueue subscriptionEventQueue = notificationQueueService.getNotificationQueue(KILLBILL_SERVICES.ENTITLEMENT_SERVICE.getServiceName(),
                                                                                                            DefaultEntitlementService.NOTIFICATION_QUEUE_NAME);
-            subscriptionEventQueue.recordFutureNotification(effectiveDate, notificationEvent, context.getUserToken(), context.getAccountRecordId(), context.getTenantRecordId());
+            subscriptionEventQueue.recordFutureNotification(tenantClock.toGlobalDateTime(effectiveDate, context), notificationEvent, context.getUserToken(), context.getAccountRecordId(), context.getTenantRecordId());
         } catch (final NoSuchNotificationQueue e) {
             throw new RuntimeException(e);
         } catch (final IOException e) {

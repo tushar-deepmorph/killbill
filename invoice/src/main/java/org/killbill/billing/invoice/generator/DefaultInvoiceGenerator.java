@@ -44,6 +44,7 @@ import org.killbill.billing.invoice.model.DefaultInvoice;
 import org.killbill.billing.invoice.optimizer.InvoiceOptimizerBase.AccountInvoices;
 import org.killbill.billing.junction.BillingEventSet;
 import org.killbill.billing.payment.api.PluginProperty;
+import org.killbill.billing.util.clock.TenantClock;
 import org.killbill.billing.util.config.definition.InvoiceConfig;
 import org.killbill.clock.Clock;
 import org.slf4j.Logger;
@@ -54,14 +55,16 @@ public class DefaultInvoiceGenerator implements InvoiceGenerator {
     private static final Logger logger = LoggerFactory.getLogger(DefaultInvoiceGenerator.class);
 
     private final Clock clock;
+    private final TenantClock tenantClock;
     private final InvoiceConfig config;
 
     private final FixedAndRecurringInvoiceItemGenerator recurringInvoiceItemGenerator;
     private final UsageInvoiceItemGenerator usageInvoiceItemGenerator;
 
     @Inject
-    public DefaultInvoiceGenerator(final Clock clock, final InvoiceConfig config, final FixedAndRecurringInvoiceItemGenerator recurringInvoiceItemGenerator, final UsageInvoiceItemGenerator usageInvoiceItemGenerator) {
+    public DefaultInvoiceGenerator(final Clock clock, final TenantClock tenantClock, final InvoiceConfig config, final FixedAndRecurringInvoiceItemGenerator recurringInvoiceItemGenerator, final UsageInvoiceItemGenerator usageInvoiceItemGenerator) {
         this.clock = clock;
+        this.tenantClock = tenantClock;
         this.config = config;
         this.recurringInvoiceItemGenerator = recurringInvoiceItemGenerator;
         this.usageInvoiceItemGenerator = usageInvoiceItemGenerator;
@@ -120,7 +123,7 @@ public class DefaultInvoiceGenerator implements InvoiceGenerator {
     private void validateTargetDate(final LocalDate targetDate, final InternalTenantContext context) throws InvoiceApiException {
         final int maximumNumberOfMonths = config.getNumberOfMonthsInFuture(context);
 
-        if (Months.monthsBetween(clock.getUTCToday(), targetDate).getMonths() > maximumNumberOfMonths) {
+        if (Months.monthsBetween(tenantClock.getUTCToday(context), targetDate).getMonths() > maximumNumberOfMonths) {
             throw new InvoiceApiException(ErrorCode.INVOICE_TARGET_DATE_TOO_FAR_IN_THE_FUTURE, targetDate.toString());
         }
     }

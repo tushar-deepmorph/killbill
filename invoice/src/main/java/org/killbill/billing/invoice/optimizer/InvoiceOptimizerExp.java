@@ -44,6 +44,7 @@ import org.killbill.billing.invoice.model.DefaultInvoice;
 import org.killbill.billing.junction.BillingEvent;
 import org.killbill.billing.junction.BillingEventSet;
 import org.killbill.commons.utils.Preconditions;
+import org.killbill.billing.util.clock.TenantClock;
 import org.killbill.billing.util.config.definition.InvoiceConfig;
 import org.killbill.clock.Clock;
 import org.skife.config.TimeSpan;
@@ -56,11 +57,15 @@ public class InvoiceOptimizerExp extends InvoiceOptimizerBase {
 
     private static final Period UNSPECIFIED_PERIOD = new Period(InvoiceConfig.DEFAULT_NULL_PERIOD);
 
+    private final TenantClock tenantClock;
+
     @Inject
     public InvoiceOptimizerExp(final InvoiceDao invoiceDao,
                                final Clock clock,
+                               final TenantClock tenantClock,
                                final InvoiceConfig invoiceConfig) {
         super(invoiceDao, clock, invoiceConfig);
+        this.tenantClock = tenantClock;
         logger.info("Feature InvoiceOptimizer is ON");
     }
 
@@ -70,7 +75,7 @@ public class InvoiceOptimizerExp extends InvoiceOptimizerBase {
 
         boolean isMaxInvoiceLimitSet = maxInvoiceLimit != null && !maxInvoiceLimit.equals(UNSPECIFIED_PERIOD);
 
-        final LocalDate cutoffDt = isMaxInvoiceLimitSet ? callContext.toLocalDate(clock.getUTCNow()).minus(maxInvoiceLimit) : null;
+        final LocalDate cutoffDt = isMaxInvoiceLimitSet ? callContext.toLocalDate(tenantClock.getUTCNow(callContext)).minus(maxInvoiceLimit) : null;
         //
         // We need to compute a 'cutoffDt' for junction (billing events) that is at least one period less than the one computed for invoice
         // to support in-arrear trailing pro-ration use cases - i.e cancellation did not occur EOT.

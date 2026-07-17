@@ -29,6 +29,7 @@ import org.joda.time.DateTime;
 import org.joda.time.LocalDate;
 import org.killbill.billing.callcontext.InternalCallContext;
 import org.killbill.billing.platform.api.KillbillService.KILLBILL_SERVICES;
+import org.killbill.billing.util.clock.TenantClock;
 import org.killbill.commons.utils.collect.Iterables;
 import org.killbill.commons.utils.collect.Sets;
 import org.killbill.billing.util.entity.dao.EntitySqlDaoWrapperFactory;
@@ -47,10 +48,12 @@ public class DefaultNextBillingDatePoster implements NextBillingDatePoster {
     private static final Logger log = LoggerFactory.getLogger(DefaultNextBillingDatePoster.class);
 
     private final NotificationQueueService notificationQueueService;
+    private final TenantClock tenantClock;
 
     @Inject
-    public DefaultNextBillingDatePoster(final NotificationQueueService notificationQueueService) {
+    public DefaultNextBillingDatePoster(final NotificationQueueService notificationQueueService, final TenantClock tenantClock) {
         this.notificationQueueService = notificationQueueService;
+        this.tenantClock = tenantClock;
     }
 
     @Override
@@ -98,7 +101,7 @@ public class DefaultNextBillingDatePoster implements NextBillingDatePoster {
                     final boolean isEventDryRunForNotifications = input.getEvent().isDryRunForInvoiceNotification() != null ?
                                                                   input.getEvent().isDryRunForInvoiceNotification() : false;
 
-                    final LocalDate eventEffectiveLocaleDate = internalCallContext.toLocalDate(input.getEffectiveDate());
+                    final LocalDate eventEffectiveLocaleDate = internalCallContext.toLocalDate(tenantClock.applyDelta(input.getEffectiveDate(), internalCallContext));
 
                     if (notificationEffectiveLocaleDate.compareTo(eventEffectiveLocaleDate) == 0 &&
                         ((isDryRunForInvoiceNotification && isEventDryRunForNotifications) ||
@@ -135,7 +138,7 @@ public class DefaultNextBillingDatePoster implements NextBillingDatePoster {
                 log.info("Queuing next billing date notification at {} for subscriptionId {}", futureNotificationTime, subscriptionIdsAsStringBuilder);
 
                 final NotificationEvent newNotificationEvent = new NextBillingDateNotificationKey(null, subscriptionIds, targetDate, isDryRunForInvoiceNotification, isRescheduled);
-                nextBillingQueue.recordFutureNotificationFromTransaction(entitySqlDaoWrapperFactory.getHandle().getConnection(), futureNotificationTime,
+                nextBillingQueue.recordFutureNotificationFromTransaction(entitySqlDaoWrapperFactory.getHandle().getConnection(), tenantClock.toGlobalDateTime(futureNotificationTime, internalCallContext),
                                                                          newNotificationEvent, internalCallContext.getUserToken(),
                                                                          internalCallContext.getAccountRecordId(), internalCallContext.getTenantRecordId());
             } else {

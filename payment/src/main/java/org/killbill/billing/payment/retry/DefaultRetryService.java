@@ -23,6 +23,7 @@ import java.util.UUID;
 import org.killbill.billing.callcontext.InternalCallContext;
 import org.killbill.billing.payment.core.PluginControlPaymentProcessor;
 import org.killbill.billing.util.callcontext.InternalCallContextFactory;
+import org.killbill.billing.util.clock.TenantClock;
 import org.killbill.clock.Clock;
 import org.killbill.notificationq.api.NotificationQueueService;
 
@@ -53,8 +54,8 @@ public class DefaultRetryService extends BaseRetryService implements RetryServic
     public static class DefaultRetryServiceScheduler extends RetryServiceScheduler {
 
         @Inject
-        public DefaultRetryServiceScheduler(final NotificationQueueService notificationQueueService, final InternalCallContextFactory internalCallContextFactory) {
-            super(notificationQueueService, internalCallContextFactory);
+        public DefaultRetryServiceScheduler(final NotificationQueueService notificationQueueService, final InternalCallContextFactory internalCallContextFactory, final TenantClock tenantClock) {
+            super(notificationQueueService, internalCallContextFactory, tenantClock);
         }
 
         @Override

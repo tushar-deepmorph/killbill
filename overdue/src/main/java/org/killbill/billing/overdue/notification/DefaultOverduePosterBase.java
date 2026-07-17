@@ -29,6 +29,7 @@ import org.killbill.billing.overdue.service.DefaultOverdueService;
 import org.killbill.commons.utils.annotation.VisibleForTesting;
 import org.killbill.billing.util.cache.CacheControllerDispatcher;
 import org.killbill.billing.util.callcontext.InternalCallContextFactory;
+import org.killbill.billing.util.clock.TenantClock;
 import org.killbill.billing.util.dao.NonEntityDao;
 import org.killbill.billing.util.entity.dao.EntitySqlDaoTransactionWrapper;
 import org.killbill.billing.util.entity.dao.EntitySqlDaoTransactionalJdbiWrapper;
@@ -50,12 +51,14 @@ public abstract class DefaultOverduePosterBase implements OverduePoster {
 
     private final NotificationQueueService notificationQueueService;
     private final EntitySqlDaoTransactionalJdbiWrapper transactionalSqlDao;
+    private final TenantClock tenantClock;
 
     public DefaultOverduePosterBase(final NotificationQueueService notificationQueueService,
                                     final IDBI dbi, @Named(MAIN_RO_IDBI_NAMED) final IDBI roDbi, final Clock clock, final CacheControllerDispatcher cacheControllerDispatcher,
-                                    final NonEntityDao nonEntityDao, final InternalCallContextFactory internalCallContextFactory) {
+                                    final NonEntityDao nonEntityDao, final InternalCallContextFactory internalCallContextFactory, final TenantClock tenantClock) {
         this.notificationQueueService = notificationQueueService;
         this.transactionalSqlDao = new EntitySqlDaoTransactionalJdbiWrapper(dbi, roDbi, clock, cacheControllerDispatcher, nonEntityDao, internalCallContextFactory);
+        this.tenantClock = tenantClock;
     }
 
     @Override
@@ -75,7 +78,7 @@ public abstract class DefaultOverduePosterBase implements OverduePoster {
                     final boolean shouldInsertNewNotification = cleanupFutureNotificationsFormTransaction(entitySqlDaoWrapperFactory, futureNotifications, futureNotificationTime, overdueQueue);
                     if (shouldInsertNewNotification) {
                         log.debug("Queuing overdue check notification. Account id: {}, timestamp: {}", accountId.toString(), futureNotificationTime.toString());
-                        overdueQueue.recordFutureNotificationFromTransaction(entitySqlDaoWrapperFactory.getHandle().getConnection(), futureNotificationTime, notificationKey, context.getUserToken(), context.getAccountRecordId(), context.getTenantRecordId());
+                        overdueQueue.recordFutureNotificationFromTransaction(entitySqlDaoWrapperFactory.getHandle().getConnection(), tenantClock.toGlobalDateTime(futureNotificationTime, context), notificationKey, context.getUserToken(), context.getAccountRecordId(), context.getTenantRecordId());
                     } else {
                         log.debug("Skipping queuing overdue check notification. Account id: {}, timestamp: {}", accountId.toString(), futureNotificationTime.toString());
                     }

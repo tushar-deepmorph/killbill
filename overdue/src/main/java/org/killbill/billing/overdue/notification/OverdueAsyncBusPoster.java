@@ -24,6 +24,7 @@ import jakarta.inject.Named;
 import org.joda.time.DateTime;
 import org.killbill.billing.util.cache.CacheControllerDispatcher;
 import org.killbill.billing.util.callcontext.InternalCallContextFactory;
+import org.killbill.billing.util.clock.TenantClock;
 import org.killbill.commons.utils.collect.Iterables;
 import org.killbill.billing.util.dao.NonEntityDao;
 import org.killbill.billing.util.entity.dao.EntitySqlDaoWrapperFactory;
@@ -40,8 +41,8 @@ public class OverdueAsyncBusPoster extends DefaultOverduePosterBase {
     @Inject
     public OverdueAsyncBusPoster(final NotificationQueueService notificationQueueService,
                                  final IDBI dbi, @Named(MAIN_RO_IDBI_NAMED) final IDBI roDbi, final Clock clock, final CacheControllerDispatcher cacheControllerDispatcher,
-                                 final NonEntityDao nonEntityDao, final InternalCallContextFactory internalCallContextFactory) {
-        super(notificationQueueService, dbi, roDbi, clock, cacheControllerDispatcher, nonEntityDao, internalCallContextFactory);
+                                 final NonEntityDao nonEntityDao, final InternalCallContextFactory internalCallContextFactory, final TenantClock tenantClock) {
+        super(notificationQueueService, dbi, roDbi, clock, cacheControllerDispatcher, nonEntityDao, internalCallContextFactory, tenantClock);
     }
 
     @Override
