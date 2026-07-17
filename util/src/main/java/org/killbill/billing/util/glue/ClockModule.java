@@ -20,7 +20,6 @@ package org.killbill.billing.util.glue;
 
 import org.killbill.billing.platform.api.KillbillConfigSource;
 import org.killbill.clock.Clock;
-import org.killbill.clock.DefaultClock;
 
 public class ClockModule extends KillBillModule {
 
@@ -30,6 +29,6 @@ public class ClockModule extends KillBillModule {
 
     @Override
     protected void configure() {
-        bind(Clock.class).to(DefaultClock.class).asEagerSingleton();
+        bind(Clock.class).to(TenantAwareClock.class).asEagerSingleton();
     }
 }

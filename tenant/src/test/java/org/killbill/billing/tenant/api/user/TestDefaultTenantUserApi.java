@@ -158,4 +158,28 @@ public class TestDefaultTenantUserApi extends TenantTestSuiteWithEmbeddedDb {
             Assert.assertEquals(e.getCode(), ErrorCode.EXTERNAL_KEY_LIMIT_EXCEEDED.getCode());
         }
     }
+
+    @Test(groups = "slow")
+    public void testPerTenantClock() throws Exception {
+        final org.joda.time.DateTime originalNow = clock.getUTCNow();
+
+        final String clockKey = "PLUGIN_CONFIG_clockDelta";
+        final String deltaValue = "86400000";
+
+        tenantUserApi.addTenantKeyValue(clockKey, deltaValue, callContext);
+
+        final List<String> values = tenantUserApi.getTenantValuesForKey(clockKey, callContext);
+        Assert.assertEquals(values.size(), 1);
+        Assert.assertEquals(values.get(0), deltaValue);
+
+        final org.joda.time.DateTime shiftedNow = clock.getUTCNow();
+
+        final long difference = shiftedNow.getMillis() - originalNow.getMillis();
+        Assert.assertTrue(difference >= 86400000L, "Clock should be shifted by at least 1 day: " + difference);
+
+        tenantUserApi.deleteTenantKey(clockKey, callContext);
+        final org.joda.time.DateTime restoredNow = clock.getUTCNow();
+        final long restoredDiff = restoredNow.getMillis() - originalNow.getMillis();
+        Assert.assertTrue(restoredDiff < 10000L, "Clock should be restored to normal: " + restoredDiff);
+    }
 }
