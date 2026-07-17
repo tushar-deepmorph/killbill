@@ -68,6 +68,7 @@ import org.killbill.billing.subscription.api.SubscriptionBaseInternalApi;
 import org.killbill.billing.subscription.api.user.SubscriptionBaseApiException;
 import org.killbill.billing.util.callcontext.CallContext;
 import org.killbill.billing.util.callcontext.InternalCallContextFactory;
+import org.killbill.billing.util.clock.TenantClock;
 import org.killbill.billing.util.optimizer.BusOptimizer;
 import org.killbill.clock.Clock;
 import org.killbill.notificationq.api.NotificationEvent;
@@ -78,6 +79,7 @@ import org.killbill.notificationq.api.NotificationQueueService.NoSuchNotificatio
 public class DefaultEntitlementInternalApi extends DefaultEntitlementApiBase implements EntitlementInternalApi {
 
     private final BlockingStateDao blockingStateDao;
+    private final TenantClock tenantClock;
 
     @Inject
     public DefaultEntitlementInternalApi(final BusOptimizer eventBus,
@@ -86,9 +88,11 @@ public class DefaultEntitlementInternalApi extends DefaultEntitlementApiBase imp
                                          final SubscriptionBaseInternalApi subscriptionInternalApi,
                                          final AccountInternalApi accountApi, final BlockingStateDao blockingStateDao, final Clock clock,
                                          final BlockingChecker checker, final NotificationQueueService notificationQueueService,
-                                         final EventsStreamBuilder eventsStreamBuilder, final EntitlementUtils entitlementUtils, final SecurityApi securityApi) {
+                                         final EventsStreamBuilder eventsStreamBuilder, final EntitlementUtils entitlementUtils, final SecurityApi securityApi,
+                                         final TenantClock tenantClock) {
         super(eventBus, entitlementApi, pluginExecution, internalCallContextFactory, subscriptionInternalApi, accountApi, blockingStateDao, clock, checker, notificationQueueService, eventsStreamBuilder, entitlementUtils, securityApi);
         this.blockingStateDao = blockingStateDao;
+        this.tenantClock = tenantClock;
     }
 
     @Override
@@ -169,7 +173,7 @@ public class DefaultEntitlementInternalApi extends DefaultEntitlementApiBase imp
         try {
             final NotificationQueue subscriptionEventQueue = notificationQueueService.getNotificationQueue(KILLBILL_SERVICES.ENTITLEMENT_SERVICE.getServiceName(),
                                                                                                            DefaultEntitlementService.NOTIFICATION_QUEUE_NAME);
-            subscriptionEventQueue.recordFutureNotification(effectiveDate, notificationEvent, context.getUserToken(), context.getAccountRecordId(), context.getTenantRecordId());
+            subscriptionEventQueue.recordFutureNotification(tenantClock.toGlobalDateTime(effectiveDate, context), notificationEvent, context.getUserToken(), context.getAccountRecordId(), context.getTenantRecordId());
         } catch (final NoSuchNotificationQueue e) {
             throw new RuntimeException(e);
         } catch (final IOException e) {

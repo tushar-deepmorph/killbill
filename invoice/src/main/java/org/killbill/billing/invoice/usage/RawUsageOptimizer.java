@@ -48,6 +48,7 @@ import org.killbill.billing.usage.InternalUserApi;
 import org.killbill.billing.usage.api.RawUsageRecord;
 import org.killbill.commons.utils.annotation.VisibleForTesting;
 import org.killbill.commons.utils.collect.Iterables;
+import org.killbill.billing.util.clock.TenantClock;
 import org.killbill.billing.util.config.definition.InvoiceConfig;
 import org.killbill.clock.Clock;
 import org.slf4j.Logger;
@@ -63,14 +64,16 @@ public class RawUsageOptimizer {
     private final InvoiceConfig config;
     private final InvoiceDao invoiceDao;
     private final Clock clock;
+    private final TenantClock tenantClock;
     private final UsageClockUtil usageClockUtil;
 
     @Inject
-    public RawUsageOptimizer(final InvoiceConfig config, final InvoiceDao invoiceDao, final InternalUserApi usageApi, final Clock clock) {
+    public RawUsageOptimizer(final InvoiceConfig config, final InvoiceDao invoiceDao, final InternalUserApi usageApi, final Clock clock, final TenantClock tenantClock) {
         this.usageApi = usageApi;
         this.config = config;
         this.invoiceDao = invoiceDao;
         this.clock = clock;
+        this.tenantClock = tenantClock;
         this.usageClockUtil = new UsageClockUtil(config);
     }
 
@@ -114,7 +117,7 @@ public class RawUsageOptimizer {
         //
         final Map<BillingPeriod, LocalDate> perBillingPeriodMostRecentConsumableInArrearItemEndDate;
         if (config.isUsageZeroAmountDisabled(internalCallContext)) {
-            perBillingPeriodMostRecentConsumableInArrearItemEndDate = getBillingPeriodMinDate2(knownUsageBillingPeriod, targetDate);
+            perBillingPeriodMostRecentConsumableInArrearItemEndDate = getBillingPeriodMinDate2(knownUsageBillingPeriod, targetDate, internalCallContext);
         } else {
             perBillingPeriodMostRecentConsumableInArrearItemEndDate = getBillingPeriodMinDate1(knownUsageBillingPeriod, existingUsageItems, knownUsage);
         }
@@ -183,8 +186,12 @@ public class RawUsageOptimizer {
     //
     @VisibleForTesting
     Map<BillingPeriod, LocalDate> getBillingPeriodMinDate2(final Collection<BillingPeriod> knownUsageBillingPeriod, final LocalDate targetDate) {
+        return getBillingPeriodMinDate2(knownUsageBillingPeriod, targetDate, null);
+    }
 
-        final LocalDate utcToday = clock.getUTCToday();
+    private Map<BillingPeriod, LocalDate> getBillingPeriodMinDate2(final Collection<BillingPeriod> knownUsageBillingPeriod, final LocalDate targetDate, @Nullable final InternalCallContext internalCallContext) {
+
+        final LocalDate utcToday = internalCallContext != null ? tenantClock.getUTCToday(internalCallContext) : clock.getUTCToday();
         final LocalDate minTodayTargetDate = utcToday.compareTo(targetDate) < 0 ? utcToday : targetDate;
         final Map<BillingPeriod, LocalDate> perBillingPeriodMostRecentConsumableInArrearItemEndDate = new HashMap<>();
 

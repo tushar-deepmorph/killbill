@@ -105,6 +105,7 @@ import org.killbill.billing.subscription.api.SubscriptionBaseInternalApi;
 import org.killbill.billing.subscription.api.user.SubscriptionBaseApiException;
 import org.killbill.billing.util.UUIDs;
 import org.killbill.billing.util.api.TagApiException;
+import org.killbill.billing.util.clock.TenantClock;
 import org.killbill.billing.util.callcontext.CallContext;
 import org.killbill.billing.util.callcontext.InternalCallContextFactory;
 import org.killbill.billing.util.callcontext.TenantContext;
@@ -153,6 +154,7 @@ public class InvoiceDispatcher {
     private final GlobalLocker locker;
     private final BusOptimizer eventBus;
     private final Clock clock;
+    private final TenantClock tenantClock;
     private final NotificationQueueService notificationQueueService;
     private final InvoiceConfig invoiceConfig;
     private final ParkedAccountsManager parkedAccountsManager;
@@ -171,6 +173,7 @@ public class InvoiceDispatcher {
                              final NotificationQueueService notificationQueueService,
                              final InvoiceConfig invoiceConfig,
                              final Clock clock,
+                             final TenantClock tenantClock,
                              final InvoiceOptimizer invoiceOptimizer,
                              final ParkedAccountsManager parkedAccountsManager) {
         this.generator = generator;
@@ -183,6 +186,7 @@ public class InvoiceDispatcher {
         this.locker = locker;
         this.eventBus = eventBus;
         this.clock = clock;
+        this.tenantClock = tenantClock;
         this.invoiceOptimizer = invoiceOptimizer;
         this.notificationQueueService = notificationQueueService;
         this.invoiceConfig = invoiceConfig;
@@ -368,7 +372,7 @@ public class InvoiceDispatcher {
         LocalDate inputTargetDate = inputTargetDateMaybeNull;
         // A null inputTargetDate is only allowed in UPCOMING_INVOICE dryRun mode to have the system compute it
         if (inputTargetDate == null && !upcomingInvoiceDryRun) {
-            inputTargetDate = context.toLocalDate(clock.getUTCNow());
+            inputTargetDate = context.toLocalDate(tenantClock.getUTCNow(context));
         }
         Preconditions.checkArgument(inputTargetDate != null || upcomingInvoiceDryRun, "inputTargetDate is required in non dryRun mode");
         // Passed through invoice code to be propagated to usage module/plugins
@@ -413,7 +417,7 @@ public class InvoiceDispatcher {
                 // Copy the results as retrieving the iterator will issue a query each time. This also makes sure the underlying JDBC connection is closed.
                 final List<NotificationEventWithMetadata<NextBillingDateNotificationKey>> futureNotifications = Iterables.toUnmodifiableList(futureNotificationsIterable);
 
-                final Map<UUID, DateTime> nextScheduledSubscriptionsEventMap = getNextTransitionsForSubscriptions(billingEvents);
+                final Map<UUID, DateTime> nextScheduledSubscriptionsEventMap = getNextTransitionsForSubscriptions(billingEvents, context);
 
                 // List of all existing invoice notifications
                 final Set<LocalDate> allCandidateTargetDates = getUpcomingInvoiceCandidateDates(futureNotifications, nextScheduledSubscriptionsEventMap, Collections.emptyList(), context);
@@ -507,9 +511,9 @@ public class InvoiceDispatcher {
     }
 
     // Return a map of subscriptionId / localDate identifying what is the next upcoming billing transition (PHASE, PAUSE, ..)
-    private Map<UUID, DateTime> getNextTransitionsForSubscriptions(final BillingEventSet billingEvents) {
+    private Map<UUID, DateTime> getNextTransitionsForSubscriptions(final BillingEventSet billingEvents, final InternalTenantContext context) {
 
-        final DateTime now = clock.getUTCNow();
+        final DateTime now = tenantClock.getUTCNow(context);
         final Map<UUID, DateTime> result = new HashMap<UUID, DateTime>();
         for (final BillingEvent evt : billingEvents) {
             final UUID subscriptionId = evt.getSubscriptionId();
@@ -723,7 +727,7 @@ public class InvoiceDispatcher {
 
             log.info("Generated null invoice for accountId='{}', targetDate='{}'", accountId, originalTargetDate);
 
-            final BusInternalEvent event = new DefaultNullInvoiceEvent(accountId, clock.getUTCToday(),
+            final BusInternalEvent event = new DefaultNullInvoiceEvent(accountId, tenantClock.getUTCToday(internalCallContext),
                                                                        internalCallContext.getAccountRecordId(), internalCallContext.getTenantRecordId(), internalCallContext.getUserToken());
 
             // Although we have a null invoice, it could be as a result of removing $0 USAGE (config#isUsageZeroAmountDisabled)
@@ -1051,7 +1055,7 @@ public class InvoiceDispatcher {
                 subscriptionsForDryRunDates.addAll(entry.getValue());
             }
 
-            final Map<UUID, DateTime> upcomingTransitionsForSubscriptions = getNextTransitionsForSubscriptions(billingEvents);
+            final Map<UUID, DateTime> upcomingTransitionsForSubscriptions = getNextTransitionsForSubscriptions(billingEvents, context);
 
             for (final Entry<UUID, DateTime> entry : upcomingTransitionsForSubscriptions.entrySet()) {
                 final LocalDate curDryRunDate = context.toLocalDate(entry.getValue().minus(dryRunNotificationTime));

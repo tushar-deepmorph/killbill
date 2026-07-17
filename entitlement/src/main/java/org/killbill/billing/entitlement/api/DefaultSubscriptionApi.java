@@ -64,6 +64,7 @@ import org.killbill.billing.util.audit.AuditLogWithHistory;
 import org.killbill.billing.util.callcontext.CallContext;
 import org.killbill.billing.util.callcontext.InternalCallContextFactory;
 import org.killbill.billing.util.callcontext.TenantContext;
+import org.killbill.billing.util.clock.TenantClock;
 import org.killbill.billing.util.customfield.ShouldntHappenException;
 import org.killbill.billing.util.entity.Pagination;
 import org.killbill.billing.util.entity.dao.DefaultPaginationHelper.SourcePaginationBuilder;
@@ -101,6 +102,7 @@ public class DefaultSubscriptionApi implements SubscriptionApi {
     private final InternalCallContextFactory internalCallContextFactory;
     private final EntitlementUtils entitlementUtils;
     private final Clock clock;
+    private final TenantClock tenantClock;
     private final EntitlementPluginExecution pluginExecution;
     private final BlockingStateDao blockingStateDao;
 
@@ -111,6 +113,7 @@ public class DefaultSubscriptionApi implements SubscriptionApi {
                                   final CatalogInternalApi catalogInternalApi,
                                   final InternalCallContextFactory internalCallContextFactory,
                                   final Clock clock,
+                                  final TenantClock tenantClock,
                                   final EntitlementPluginExecution pluginExecution,
                                   final BlockingStateDao blockingStateDao,
                                   final EntitlementUtils entitlementUtils) {
@@ -120,6 +123,7 @@ public class DefaultSubscriptionApi implements SubscriptionApi {
         this.catalogInternalApi = catalogInternalApi;
         this.internalCallContextFactory = internalCallContextFactory;
         this.clock = clock;
+        this.tenantClock = tenantClock;
         this.pluginExecution = pluginExecution;
         this.blockingStateDao = blockingStateDao;
         this.entitlementUtils = entitlementUtils;
@@ -455,7 +459,7 @@ public class DefaultSubscriptionApi implements SubscriptionApi {
             final List<BlockingState> allBlockingStates = blockingStateDao.getBlockingAllForAccountRecordId(catalog, internalTenantContextWithValidAccountRecordId);
             final Iterable<BlockingState> filteredBlockingStates = filterBlockingState(allBlockingStates, typeFilter, svcsFilter);
 
-            final LocalDate localDateNowInAccountTimezone = internalTenantContextWithValidAccountRecordId.toLocalDate(clock.getUTCNow());
+            final LocalDate localDateNowInAccountTimezone = internalTenantContextWithValidAccountRecordId.toLocalDate(tenantClock.getUTCNow(internalTenantContextWithValidAccountRecordId));
             final List<BlockingState> result = new ArrayList<>();
             for (final BlockingState cur : filteredBlockingStates) {
 

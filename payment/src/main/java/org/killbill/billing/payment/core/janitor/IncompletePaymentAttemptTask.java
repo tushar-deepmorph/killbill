@@ -49,6 +49,7 @@ import org.killbill.billing.payment.dao.PluginPropertySerializer;
 import org.killbill.billing.payment.dao.PluginPropertySerializer.PluginPropertySerializerException;
 import org.killbill.billing.payment.plugin.api.PaymentTransactionInfoPlugin;
 import org.killbill.billing.util.UUIDs;
+import org.killbill.billing.util.clock.TenantClock;
 import org.killbill.billing.util.callcontext.CallOrigin;
 import org.killbill.billing.util.callcontext.InternalCallContextFactory;
 import org.killbill.billing.util.callcontext.UserType;
@@ -57,6 +58,7 @@ import org.killbill.billing.util.entity.Pagination;
 import org.killbill.clock.Clock;
 import org.killbill.commons.locker.LockFailedException;
 import org.killbill.commons.utils.annotation.VisibleForTesting;
+import org.killbill.commons.utils.collect.Iterables;
 import org.killbill.notificationq.api.NotificationEvent;
 import org.killbill.notificationq.api.NotificationQueue;
 import org.skife.config.TimeSpan;
@@ -82,6 +84,7 @@ public class IncompletePaymentAttemptTask implements Runnable {
 
     private final PaymentConfig paymentConfig;
     private final Clock clock;
+    private final TenantClock tenantClock;
     private final PaymentDao paymentDao;
     private final InternalCallContextFactory internalCallContextFactory;
     private final PaymentControlStateMachineHelper retrySMHelper;
@@ -99,6 +102,7 @@ public class IncompletePaymentAttemptTask implements Runnable {
                                         final PaymentConfig paymentConfig,
                                         final PaymentDao paymentDao,
                                         final Clock clock,
+                                        final TenantClock tenantClock,
                                         final PaymentControlStateMachineHelper retrySMHelper,
                                         final AccountInternalApi accountInternalApi,
                                         final PluginControlPaymentAutomatonRunner pluginControlledPaymentAutomatonRunner,
@@ -107,6 +111,7 @@ public class IncompletePaymentAttemptTask implements Runnable {
         this.paymentConfig = paymentConfig;
         this.paymentDao = paymentDao;
         this.clock = clock;
+        this.tenantClock = tenantClock;
         this.retrySMHelper = retrySMHelper;
         this.accountInternalApi = accountInternalApi;
         this.pluginControlledPaymentAutomatonRunner = pluginControlledPaymentAutomatonRunner;
@@ -195,11 +200,16 @@ public class IncompletePaymentAttemptTask implements Runnable {
 
     @VisibleForTesting
     Iterable<PaymentAttemptModelDao> getItemsForIteration() {
-        final Pagination<PaymentAttemptModelDao> incompleteAttempts = paymentDao.getPaymentAttemptsByStateAcrossTenants(retrySMHelper.getInitialState().getName(), getCreatedDateBefore(), 0L, MAX_ATTEMPTS_PER_ITERATIONS);
+        final Pagination<PaymentAttemptModelDao> incompleteAttempts = paymentDao.getPaymentAttemptsByStateAcrossTenants(retrySMHelper.getInitialState().getName(), clock.getUTCNow().plusYears(100), 0L, MAX_ATTEMPTS_PER_ITERATIONS);
         if (incompleteAttempts.getTotalNbRecords() > 0) {
             log.info("Janitor AttemptCompletionTask start run: found {} incomplete attempts", incompleteAttempts.getTotalNbRecords());
         }
-        return incompleteAttempts;
+        return Iterables.toUnmodifiableList(incompleteAttempts).stream()
+                        .filter(input -> {
+                            final InternalTenantContext tenantContext = internalCallContextFactory.createInternalTenantContext(input.getTenantRecordId(), input.getAccountRecordId());
+                            return input.getCreatedDate().compareTo(getCreatedDateBefore(tenantContext)) <= 0;
+                        })
+                        .collect(Collectors.toUnmodifiableList());
     }
 
     // Since the code is a bit tedious to follow, I'm adding some notes here on where isApiPayment is used (valid as of 09/19/2019 - might become stale!):
@@ -391,7 +401,7 @@ public class IncompletePaymentAttemptTask implements Runnable {
         // Will be null in the GET path or when we run out opf attempts..
         if (notificationTime != null) {
             try {
-                janitorQueue.recordFutureNotification(notificationTime, key, userToken, accountRecordId, tenantRecordId);
+                janitorQueue.recordFutureNotification(tenantClock.toGlobalDateTime(notificationTime, tenantContext), key, userToken, accountRecordId, tenantRecordId);
             } catch (final IOException e) {
                 log.warn("Failed to insert future notification for paymentTransactionId = {}: {}", paymentTransactionId, e.getMessage());
             }
@@ -414,12 +424,12 @@ public class IncompletePaymentAttemptTask implements Runnable {
             return null;
         }
         final TimeSpan nextDelay = retries.get(attemptNumber - 1);
-        return clock.getUTCNow().plusMillis((int) nextDelay.getMillis());
+        return tenantClock.getUTCNow(internalTenantContext).plusMillis((int) nextDelay.getMillis());
     }
 
-    private DateTime getCreatedDateBefore() {
+    private DateTime getCreatedDateBefore(final InternalTenantContext internalTenantContext) {
         final long delayBeforeNowMs = paymentConfig.getIncompleteAttemptsTimeSpanDelay().getMillis();
-        return clock.getUTCNow().minusMillis((int) delayBeforeNowMs);
+        return tenantClock.getUTCNow(internalTenantContext).minusMillis((int) delayBeforeNowMs);
     }
 
     private boolean isApiPayment(final JanitorNotificationKey notificationKey) {

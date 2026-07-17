@@ -32,6 +32,7 @@ import org.killbill.billing.platform.api.KillbillService.KILLBILL_SERVICES;
 import org.killbill.billing.util.callcontext.CallOrigin;
 import org.killbill.billing.util.callcontext.InternalCallContextFactory;
 import org.killbill.billing.util.callcontext.UserType;
+import org.killbill.billing.util.clock.TenantClock;
 import org.killbill.billing.util.entity.dao.EntitySqlDaoWrapperFactory;
 import org.killbill.clock.Clock;
 import org.killbill.notificationq.api.NotificationEvent;
@@ -117,12 +118,15 @@ public abstract class BaseRetryService extends RetryableService implements Retry
 
         private final NotificationQueueService notificationQueueService;
         private final InternalCallContextFactory internalCallContextFactory;
+        private final TenantClock tenantClock;
 
         @Inject
         public RetryServiceScheduler(final NotificationQueueService notificationQueueService,
-                                     final InternalCallContextFactory internalCallContextFactory) {
+                                     final InternalCallContextFactory internalCallContextFactory,
+                                     final TenantClock tenantClock) {
             this.notificationQueueService = notificationQueueService;
             this.internalCallContextFactory = internalCallContextFactory;
+            this.tenantClock = tenantClock;
         }
 
         public boolean scheduleRetry(final ObjectType objectType, final UUID objectId, final UUID attemptId, final Long tenantRecordId, final List<String> paymentControlPluginNames, final DateTime timeOfRetry) {
@@ -138,10 +142,11 @@ public abstract class BaseRetryService extends RetryableService implements Retry
                 final NotificationEvent key = new PaymentRetryNotificationKey(attemptId, paymentControlPluginNames);
                 if (retryQueue != null) {
                     log.debug("Scheduling retry timeOfRetry={}, key={}", timeOfRetry, key);
+                    final DateTime queueTimeOfRetry = tenantClock.toGlobalDateTime(timeOfRetry, context);
                     if (transactionalDao == null) {
-                        retryQueue.recordFutureNotification(timeOfRetry, key, context.getUserToken(), context.getAccountRecordId(), context.getTenantRecordId());
+                        retryQueue.recordFutureNotification(queueTimeOfRetry, key, context.getUserToken(), context.getAccountRecordId(), context.getTenantRecordId());
                     } else {
-                        retryQueue.recordFutureNotificationFromTransaction(transactionalDao.getHandle().getConnection(), timeOfRetry, key, context.getUserToken(), context.getAccountRecordId(), context.getTenantRecordId());
+                        retryQueue.recordFutureNotificationFromTransaction(transactionalDao.getHandle().getConnection(), queueTimeOfRetry, key, context.getUserToken(), context.getAccountRecordId(), context.getTenantRecordId());
                     }
                 }
             } catch (final NoSuchNotificationQueue e) {
