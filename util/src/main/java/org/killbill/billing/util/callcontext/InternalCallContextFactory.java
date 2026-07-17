@@ -39,6 +39,7 @@ import org.killbill.billing.util.cache.CacheController;
 import org.killbill.billing.util.cache.CacheControllerDispatcher;
 import org.killbill.billing.util.dao.NonEntityDao;
 import org.killbill.billing.util.entity.dao.TimeZoneAwareEntity;
+import org.killbill.billing.util.clock.TenantClock;
 import org.killbill.clock.Clock;
 import org.slf4j.MDC;
 
@@ -55,6 +56,7 @@ public class InternalCallContextFactory {
 
     private final ImmutableAccountInternalApi accountInternalApi;
     private final Clock clock;
+    private final TenantClock tenantClock;
     private final NonEntityDao nonEntityDao;
     private final CacheController<String, UUID> objectIdCacheController;
     private final CacheController<String, Long> recordIdCacheController;
@@ -65,9 +67,11 @@ public class InternalCallContextFactory {
     public InternalCallContextFactory(@Nullable final ImmutableAccountInternalApi accountInternalApi,
                                       final Clock clock,
                                       final NonEntityDao nonEntityDao,
+                                      final TenantClock tenantClock,
                                       @Nullable final CacheControllerDispatcher cacheControllerDispatcher) {
         this.accountInternalApi = accountInternalApi;
         this.clock = clock;
+        this.tenantClock = tenantClock;
         this.nonEntityDao = nonEntityDao;
         if (cacheControllerDispatcher == null) {
             this.objectIdCacheController = null;
@@ -80,6 +84,13 @@ public class InternalCallContextFactory {
             this.accountRecordIdCacheController = cacheControllerDispatcher.getCacheController(CacheType.ACCOUNT_RECORD_ID);
             this.tenantRecordIdCacheController = cacheControllerDispatcher.getCacheController(CacheType.TENANT_RECORD_ID);
         }
+    }
+
+    public InternalCallContextFactory(@Nullable final ImmutableAccountInternalApi accountInternalApi,
+                                      final Clock clock,
+                                      final NonEntityDao nonEntityDao,
+                                      @Nullable final CacheControllerDispatcher cacheControllerDispatcher) {
+        this(accountInternalApi, clock, nonEntityDao, new TenantClock(clock), cacheControllerDispatcher);
     }
 
     //
@@ -209,8 +220,8 @@ public class InternalCallContextFactory {
                                          context.getUserToken(),
                                          context.getReasonCode(),
                                          context.getComments(),
-                                         context.getCreatedDate(),
-                                         context.getUpdatedDate());
+                                         null,
+                                         null);
     }
 
     // Used by the payment retry service
@@ -251,7 +262,7 @@ public class InternalCallContextFactory {
         // If tenant id is null, this will default to the default tenant record id (multi-tenancy disabled)
         final Long tenantRecordId = getTenantRecordIdSafe(context);
         populateMDCContext(context.getUserToken(), null, tenantRecordId);
-        return new InternalCallContext(tenantRecordId, context, context.getCreatedDate());
+        return new InternalCallContext(tenantRecordId, context, tenantClock.getUTCNow(new InternalTenantContext(tenantRecordId)));
     }
 
     // Used when we need to re-hydrate the callcontext with the account_record_id (when creating the account)
@@ -308,6 +319,8 @@ public class InternalCallContextFactory {
         }
 
         populateMDCContext(userToken, accountRecordId, nonNulTenantRecordId);
+        final InternalTenantContext tenantContext = new InternalTenantContext(nonNulTenantRecordId, accountRecordId, accountTimeZone, fixedOffsetTimeZone, referenceTime);
+        final DateTime utcNow = tenantClock.getUTCNow(tenantContext);
 
         return new InternalCallContext(nonNulTenantRecordId,
                                        accountRecordId,
@@ -320,8 +333,8 @@ public class InternalCallContextFactory {
                                        userType,
                                        reasonCode,
                                        comment,
-                                       createdDate != null ? createdDate : clock.getUTCNow(),
-                                       updatedDate != null ? createdDate : clock.getUTCNow());
+                                       createdDate != null ? createdDate : utcNow,
+                                       updatedDate != null ? updatedDate : utcNow);
     }
 
     private ImmutableAccountData getImmutableAccountData(final Long accountRecordId, final Long tenantRecordId) {
