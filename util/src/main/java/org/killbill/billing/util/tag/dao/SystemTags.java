@@ -24,6 +24,7 @@ import java.util.UUID;
 
 import org.killbill.billing.ObjectType;
 import org.killbill.billing.util.tag.ControlTagType;
+import org.killbill.billing.util.tag.PaidByExternalTag;
 
 public class SystemTags {
 
@@ -33,6 +34,8 @@ public class SystemTags {
 
     // Note! TagSqlDao.sql.stg needs to be kept in sync (see userAndSystemTagDefinitions)
     private static final List<TagDefinitionModelDao> SYSTEM_DEFINED_TAG_DEFINITIONS = List.of(new TagDefinitionModelDao(PARK_TAG_DEFINITION_ID, null, null, PARK_TAG_DEFINITION_NAME, "Accounts with invalid invoicing state", ObjectType.ACCOUNT.name()));
+    private static final TagDefinitionModelDao PAID_BY_EXTERNAL_TAG_DEFINITION = new TagDefinitionModelDao(PaidByExternalTag.ID, null, null, PaidByExternalTag.NAME,
+                                                                                                          "Invoices are paid later through customer-initiated external payments.", ObjectType.ACCOUNT.name());
 
     public static Collection<TagDefinitionModelDao> get(final boolean includeSystemTags) {
         final Collection<TagDefinitionModelDao> all = includeSystemTags ?
@@ -41,6 +44,7 @@ public class SystemTags {
         for (final ControlTagType controlTag : ControlTagType.values()) {
             all.add(new TagDefinitionModelDao(controlTag));
         }
+        all.add(PAID_BY_EXTERNAL_TAG_DEFINITION);
         return all;
     }
 
@@ -57,11 +61,15 @@ public class SystemTags {
             }
         }
 
+        if (PAID_BY_EXTERNAL_TAG_DEFINITION.getName().equals(tagDefinitionName)) {
+            return PAID_BY_EXTERNAL_TAG_DEFINITION;
+        }
+
         return null;
     }
 
     public static boolean isSystemTag(final UUID tagDefinitionId) {
-        return SYSTEM_DEFINED_TAG_DEFINITIONS.stream().anyMatch(input -> input.getId().equals(tagDefinitionId));
+        return PAID_BY_EXTERNAL_TAG_DEFINITION.getId().equals(tagDefinitionId) || SYSTEM_DEFINED_TAG_DEFINITIONS.stream().anyMatch(input -> input.getId().equals(tagDefinitionId));
     }
 
     public static TagDefinitionModelDao lookup(final UUID tagDefinitionId) {
@@ -75,6 +83,10 @@ public class SystemTags {
             if (t.getId().equals(tagDefinitionId)) {
                 return t;
             }
+        }
+
+        if (PAID_BY_EXTERNAL_TAG_DEFINITION.getId().equals(tagDefinitionId)) {
+            return PAID_BY_EXTERNAL_TAG_DEFINITION;
         }
 
         return null;

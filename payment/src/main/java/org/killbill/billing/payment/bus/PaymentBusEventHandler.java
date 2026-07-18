@@ -26,6 +26,7 @@ import java.util.List;
 import jakarta.inject.Inject;
 
 import org.killbill.billing.ErrorCode;
+import org.killbill.billing.ObjectType;
 import org.killbill.billing.account.api.Account;
 import org.killbill.billing.account.api.AccountApiException;
 import org.killbill.billing.account.api.AccountInternalApi;
@@ -37,6 +38,7 @@ import org.killbill.billing.payment.api.PaymentApiException;
 import org.killbill.billing.payment.api.PaymentListenerService;
 import org.killbill.billing.payment.api.PaymentOptions;
 import org.killbill.billing.payment.core.janitor.Janitor;
+import org.killbill.billing.tag.TagInternalApi;
 import org.killbill.billing.platform.api.LifecycleHandlerType;
 import org.killbill.billing.platform.api.LifecycleHandlerType.LifecycleLevel;
 import org.killbill.billing.util.callcontext.CallOrigin;
@@ -45,6 +47,7 @@ import org.killbill.billing.util.callcontext.UserType;
 import org.killbill.billing.util.config.TimeSpanConverter;
 import org.killbill.billing.util.config.definition.PaymentConfig;
 import org.killbill.billing.util.optimizer.BusDispatcherOptimizer;
+import org.killbill.billing.util.tag.PaidByExternalTag;
 import org.killbill.billing.util.queue.QueueRetryException;
 import org.killbill.clock.Clock;
 import org.killbill.commons.eventbus.AllowConcurrentEvents;
@@ -72,6 +75,7 @@ public class PaymentBusEventHandler extends RetryableService implements PaymentL
     @Inject
     public PaymentBusEventHandler(final PaymentConfig paymentConfig,
                                   final AccountInternalApi accountApi,
+                                  final TagInternalApi tagInternalApi,
                                   final InvoicePaymentInternalApi invoicePaymentInternalApi,
                                   final Janitor janitor,
                                   final BusDispatcherOptimizer busDispatcherOptimizer,
@@ -97,6 +101,12 @@ public class PaymentBusEventHandler extends RetryableService implements PaymentL
                 try {
 
                     account = accountApi.getAccountById(event.getAccountId(), internalContext);
+
+                    if (tagInternalApi.getTags(account.getId(), ObjectType.ACCOUNT, internalContext).stream()
+                            .anyMatch(tag -> PaidByExternalTag.ID.equals(tag.getTagDefinitionId()))) {
+                        log.info("Skipping automatic payment for invoiceId='{}': accountId='{}' is PAID_BY_EXTERNAL", event.getInvoiceId(), event.getAccountId());
+                        return;
+                    }
 
                     invoicePaymentInternalApi.createPurchaseForInvoicePayment(false,
                                                                               account,
@@ -184,5 +194,3 @@ public class PaymentBusEventHandler extends RetryableService implements PaymentL
         super.stop();
     }
 }
-
-
