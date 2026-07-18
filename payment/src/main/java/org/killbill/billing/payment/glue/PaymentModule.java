@@ -27,6 +27,8 @@ import org.killbill.billing.osgi.api.OSGIServiceRegistration;
 import org.killbill.billing.payment.api.AdminPaymentApi;
 import org.killbill.billing.payment.api.DefaultAdminPaymentApi;
 import org.killbill.billing.payment.api.DefaultInvoicePaymentApi;
+import org.killbill.billing.payment.api.DefaultExternalInvoicePaymentApi;
+import org.killbill.billing.payment.api.ExternalInvoicePaymentApi;
 import org.killbill.billing.payment.api.DefaultPaymentApi;
 import org.killbill.billing.payment.api.DefaultPaymentGatewayApi;
 import org.killbill.billing.payment.api.InvoicePaymentApi;
@@ -155,6 +157,7 @@ public class PaymentModule extends KillBillModule {
 
         bind(PaymentApi.class).to(DefaultPaymentApi.class).asEagerSingleton();
         bind(InvoicePaymentApi.class).to(DefaultInvoicePaymentApi.class).asEagerSingleton();
+        bind(ExternalInvoicePaymentApi.class).to(DefaultExternalInvoicePaymentApi.class).asEagerSingleton();
         bind(InvoicePaymentInternalApi.class).to(DefaultInvoicePaymentInternalApi.class).asEagerSingleton();
         bind(PaymentGatewayApi.class).to(DefaultPaymentGatewayApi.class).asEagerSingleton();
         bind(AdminPaymentApi.class).to(DefaultAdminPaymentApi.class).asEagerSingleton();

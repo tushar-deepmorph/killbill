@@ -1085,6 +1085,8 @@ public class DefaultInvoiceDao extends EntityDaoBase<InvoiceModelDao, Invoice, I
     }
 
     private void notifyOfPaymentCompletionInternal(final InvoicePaymentModelDao invoicePayment, final UUID paymentAttemptId, final boolean completion, final InternalCallContext context) {
+        final List<CustomField> invoiceCustomFields = getInvoiceCustomFields(context);
+        final List<Tag> invoicesTags = getInvoicesTags(context);
         transactionalSqlDao.execute(false, entitySqlDaoWrapperFactory -> {
             final InvoicePaymentSqlDao transactional = entitySqlDaoWrapperFactory.become(InvoicePaymentSqlDao.class);
             //
@@ -1133,6 +1135,10 @@ public class DefaultInvoiceDao extends EntityDaoBase<InvoiceModelDao, Invoice, I
 
             if (completion) {
                 final UUID accountId = nonEntityDao.retrieveIdFromObjectInTransaction(context.getAccountRecordId(), ObjectType.ACCOUNT, objectIdCacheController, entitySqlDaoWrapperFactory.getHandle());
+                if (invoicePayment.getStatus() == InvoicePaymentStatus.SUCCESS) {
+                    final CBALogicWrapper cbaWrapper = new CBALogicWrapper(accountId, invoiceCustomFields, invoicesTags, context, entitySqlDaoWrapperFactory);
+                    cbaWrapper.runCBALogicWithNotificationEvents(Set.of(invoicePayment.getInvoiceId()));
+                }
                 notifyBusOfInvoicePayment(entitySqlDaoWrapperFactory, invoicePayment, accountId, paymentAttemptId, context.getUserToken(), context);
             }
             return null;

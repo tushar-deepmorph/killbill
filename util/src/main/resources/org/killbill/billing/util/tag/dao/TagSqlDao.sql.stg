@@ -114,6 +114,11 @@ userAndSystemTagDefinitions() ::= <<
   , \'Use existing draft invoice if exists.\' description
   union
   select
+    \'00000000-0000-0000-0000-00000000000a\' id
+  , \'PAID_BY_EXTERNAL\' as name
+  , \'Invoices are paid later through customer-initiated external payments.\' description
+  union
+  select
     \'00000000-0000-0001-0000-000000000001\' id
   , \'__PARK__\' as name
   , \'Accounts with invalid invoicing state\' description

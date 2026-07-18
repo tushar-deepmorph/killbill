@@ -21,6 +21,7 @@ import java.math.BigDecimal;
 import java.util.Collection;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 import org.joda.time.DateTime;
@@ -69,6 +70,37 @@ public class DefaultInvoicePaymentInternalApi extends DefaultApiBase implements 
         this.invoiceInternalApi = invoiceInternalApi;
         this.pluginControlPaymentProcessor = pluginControlPaymentProcessor;
         this.paymentMethodProcessor = paymentMethodProcessor;
+    }
+
+    @Override
+    public Payment createPurchaseForInvoicePayments(final boolean isApiPayment,
+                                                    final Account account,
+                                                    final Map<UUID, BigDecimal> invoiceAllocations,
+                                                    final DateTime effectiveDate,
+                                                    final String paymentExternalKey,
+                                                    final String paymentTransactionExternalKey,
+                                                    final Iterable<PluginProperty> originalProperties,
+                                                    final PaymentOptions paymentOptions,
+                                                    final InternalCallContext internalCallContext) throws PaymentApiException {
+        checkExternalKeyLength(paymentTransactionExternalKey);
+        if (invoiceAllocations == null || invoiceAllocations.isEmpty()) {
+            throw new PaymentApiException(org.killbill.billing.ErrorCode.PAYMENT_PLUGIN_EXCEPTION, "At least one invoice allocation is required");
+        }
+
+        final Collection<PluginProperty> pluginProperties = new LinkedList<>();
+        if (originalProperties != null) {
+            originalProperties.forEach(pluginProperties::add);
+        }
+        pluginProperties.add(new PluginProperty(IPCD_INVOICE_ALLOCATIONS, Map.copyOf(invoiceAllocations), false));
+
+        final BigDecimal amount = invoiceAllocations.values().stream().reduce(BigDecimal.ZERO, BigDecimal::add);
+        final CallContext callContext = internalCallContextFactory.createCallContext(internalCallContext);
+        final List<String> controlPlugins = InvoicePaymentPaymentOptions.addInvoicePaymentControlPlugin(toPaymentControlPluginNames(paymentOptions, callContext));
+        final UUID paymentMethodId = paymentMethodProcessor.createOrGetExternalPaymentMethod(UUIDs.randomUUID().toString(), account, pluginProperties, callContext, internalCallContext);
+
+        return pluginControlPaymentProcessor.createPurchase(isApiPayment, account, paymentMethodId, null, amount, account.getCurrency(),
+                                                            effectiveDate, paymentExternalKey, paymentTransactionExternalKey,
+                                                            pluginProperties, controlPlugins, callContext, internalCallContext);
     }
 
     @Override
