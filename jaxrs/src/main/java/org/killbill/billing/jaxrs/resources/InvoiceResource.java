@@ -21,6 +21,7 @@ package org.killbill.billing.jaxrs.resources;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.math.BigDecimal;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -740,6 +741,87 @@ public class InvoiceResource extends JaxRsResourceBase {
         return result != null ?
                uriBuilder.buildResponse(uriInfo, InvoicePaymentResource.class, "getInvoicePayment", result.getPaymentId(), request) :
                Response.status(Status.NO_CONTENT).build();
+    }
+
+    @TimedResource
+    @POST
+    @Produces(APPLICATION_JSON)
+    @Consumes(APPLICATION_JSON)
+    @Path("/" + PAYMENTS)
+    @Operation(summary = "Record a customer-initiated external payment against one or more invoices",
+               description = "Records a bank transaction (as an external payment) allocated across one or more invoices of the same account. " +
+                             "Supports full payment, partial payment (the invoice keeps a remaining balance), overpayment (the excess becomes account credit / CBA) " +
+                             "and a single transaction allocated across multiple invoices. Payments flow through the normal invoice-payment bookkeeping, " +
+                             "so account balance, overdue calculations and reporting see them like any other payment (https://github.com/killbill/killbill/issues/2040).")
+    @ApiResponses(value = {@ApiResponse(responseCode = "200", description = "Recorded external payment(s) successfully", content = @Content(mediaType = "application/json", array = @ArraySchema(schema = @Schema(implementation = InvoicePaymentJson.class)))),
+                           @ApiResponse(responseCode = "400", description = "Invalid account id, invoice id or amount supplied"),
+                           @ApiResponse(responseCode = "404", description = "Account or invoice not found")})
+    public Response recordExternalPayments(final List<InvoicePaymentJson> payments,
+                                           @QueryParam(QUERY_PAYMENT_CONTROL_PLUGIN_NAME) final List<String> paymentControlPluginNames,
+                                           @QueryParam(QUERY_PLUGIN_PROPERTY) final List<String> pluginPropertiesString,
+                                           @HeaderParam(HDR_CREATED_BY) final String createdBy,
+                                           @HeaderParam(HDR_REASON) final String reason,
+                                           @HeaderParam(HDR_COMMENT) final String comment,
+                                           @jakarta.ws.rs.core.Context final HttpServletRequest request,
+                                           @jakarta.ws.rs.core.Context final UriInfo uriInfo) throws AccountApiException, PaymentApiException, InvoiceApiException {
+        verifyNonNullOrEmpty(payments, "InvoicePaymentJson body should be specified");
+        final UUID accountId = payments.get(0).getAccountId();
+        verifyNonNullOrEmpty(accountId, "InvoicePaymentJson accountId needs to be set");
+
+        final Iterable<PluginProperty> pluginProperties = extractPluginProperties(pluginPropertiesString);
+        final CallContext callContext = context.createCallContextWithAccountId(accountId, createdBy, reason, comment, request);
+        final Account account = accountUserApi.getAccountById(accountId, callContext);
+
+        // Customer-initiated payment: always recorded as an external payment (no payment method involved).
+        final PaymentOptions paymentOptions = createControlPluginApiPaymentOptions(true, paymentControlPluginNames);
+
+        final List<UUID> createdPaymentIds = new ArrayList<>();
+        BigDecimal totalOverpayment = BigDecimal.ZERO;
+        for (final InvoicePaymentJson payment : payments) {
+            verifyNonNullOrEmpty(payment.getTargetInvoiceId(), "InvoicePaymentJson targetInvoiceId needs to be set");
+            Preconditions.checkArgument(payment.getPaymentMethodId() == null, "InvoicePaymentJson should not contain a paymentMethodId for an external payment");
+            Preconditions.checkArgument(accountId.equals(payment.getAccountId()), "All invoice payments must belong to the same account");
+            final BigDecimal requestedAmount = payment.getPurchasedAmount();
+            Preconditions.checkArgument(requestedAmount != null && requestedAmount.compareTo(BigDecimal.ZERO) > 0, "InvoicePaymentJson purchasedAmount must be strictly positive");
+
+            final Invoice invoice = invoiceApi.getInvoice(payment.getTargetInvoiceId(), callContext);
+            Preconditions.checkArgument(accountId.equals(invoice.getAccountId()), "Invoice does not belong to the specified account");
+
+            final BigDecimal balance = invoice.getBalance().max(BigDecimal.ZERO);
+            final BigDecimal amountToPay = requestedAmount.min(balance);
+            if (amountToPay.compareTo(BigDecimal.ZERO) > 0) {
+                final InvoicePayment result = createPurchaseForInvoice(account, invoice.getId(), amountToPay, null,
+                                                                       payment.getPaymentExternalKey(), null, pluginProperties, paymentOptions, callContext);
+                if (result != null && result.getPaymentId() != null) {
+                    createdPaymentIds.add(result.getPaymentId());
+                }
+            }
+
+            // Track any amount recorded beyond the invoice balance so it can be turned into account credit below.
+            final BigDecimal overpayment = requestedAmount.subtract(balance);
+            if (overpayment.compareTo(BigDecimal.ZERO) > 0) {
+                totalOverpayment = totalOverpayment.add(overpayment);
+            }
+        }
+
+        // Overpayment: the excess becomes account credit (CBA), consumed against future invoices.
+        if (totalOverpayment.compareTo(BigDecimal.ZERO) > 0) {
+            final LocalDate creditDate = new LocalDate(callContext.getCreatedDate(), account.getTimeZone());
+            final InvoiceItemJson creditItem = new InvoiceItemJson(null, null, null, accountId, null, null, null,
+                                                                   null, null, null, null, null, null, null, null,
+                                                                   null, null, null, null, totalOverpayment, null, account.getCurrency(),
+                                                                   null, null, null, null, null);
+            final Iterable<InvoiceItem> creditItems = validateSanitizeAndTranformInputItems(account.getCurrency(), List.of(creditItem));
+            invoiceApi.insertCredits(accountId, creditDate, creditItems, true, pluginProperties, callContext);
+        }
+
+        final AccountAuditLogs accountAuditLogs = auditUserApi.getAccountAuditLogs(accountId, AuditLevel.NONE, callContext);
+        final List<InvoicePaymentJson> result = new ArrayList<>();
+        for (final UUID paymentId : createdPaymentIds) {
+            final Payment createdPayment = paymentApi.getPayment(paymentId, false, false, Collections.emptyList(), callContext);
+            result.add(new InvoicePaymentJson(createdPayment, null, accountAuditLogs));
+        }
+        return Response.status(Status.OK).entity(result).build();
     }
 
     @TimedResource
