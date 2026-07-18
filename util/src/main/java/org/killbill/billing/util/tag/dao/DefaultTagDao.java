@@ -141,7 +141,7 @@ public class DefaultTagDao extends EntityDaoBase<TagModelDao, Tag, TagApiExcepti
 
         final TagInternalEvent tagEvent;
         final TagDefinitionModelDao tagDefinition = getTagDefinitionFromTransaction(tag.getTagDefinitionId(), entitySqlDaoWrapperFactory, context);
-        final boolean isControlTag = ControlTagType.getTypeFromId(tagDefinition.getId()) != null;
+        final boolean isControlTag = ControlTagType.getTypeFromId(tagDefinition.getId()) != null || SystemTags.PAID_BY_EXTERNAL_TAG_DEFINITION_ID.equals(tagDefinition.getId());
         switch (changeType) {
             case INSERT:
                 tagEvent = (isControlTag) ?
@@ -202,6 +202,12 @@ public class DefaultTagDao extends EntityDaoBase<TagModelDao, Tag, TagApiExcepti
     }
 
     private void validateApplicableObjectTypes(final UUID tagDefinitionId, final ObjectType objectType) {
+        if (SystemTags.PAID_BY_EXTERNAL_TAG_DEFINITION_ID.equals(tagDefinitionId)) {
+            if (objectType != ObjectType.ACCOUNT) {
+                throw new IllegalStateException(String.format("Invalid control tag '%s' for object type '%s'", SystemTags.PAID_BY_EXTERNAL_TAG_DEFINITION_NAME, objectType));
+            }
+            return;
+        }
         final ControlTagType controlTagType = Stream.of(ControlTagType.values())
                 .filter(input -> input.getId().equals(tagDefinitionId))
                 .findFirst().orElse(null);

@@ -100,4 +100,65 @@ public class TestInvoicePaymentControlPluginApiUnit extends PaymentTestSuiteNoDB
         result = api.getNumberAttemptsInState(Collections.emptyList(), TransactionStatus.SUCCESS);
         Assert.assertEquals(result, 0);
     }
+
+    @Test(groups = "fast")
+    public void testPriorCallWithPaidByExternalTag() throws Exception {
+        final java.util.UUID invoiceId = java.util.UUID.randomUUID();
+        final java.util.UUID accountId = java.util.UUID.randomUUID();
+        final java.util.UUID paymentMethodId = java.util.UUID.randomUUID();
+
+        final org.killbill.billing.util.config.definition.PaymentConfig paymentConfig = Mockito.mock(org.killbill.billing.util.config.definition.PaymentConfig.class);
+        final org.killbill.billing.invoice.api.InvoiceInternalApi invoiceApi = Mockito.mock(org.killbill.billing.invoice.api.InvoiceInternalApi.class);
+        final org.killbill.billing.util.api.TagUserApi tagUserApi = Mockito.mock(org.killbill.billing.util.api.TagUserApi.class);
+        final org.killbill.billing.payment.dao.PaymentDao paymentDao = Mockito.mock(org.killbill.billing.payment.dao.PaymentDao.class);
+        final org.killbill.billing.payment.invoice.dao.InvoicePaymentControlDao invoicePaymentControlDao = Mockito.mock(org.killbill.billing.payment.invoice.dao.InvoicePaymentControlDao.class);
+        final org.killbill.billing.payment.retry.BaseRetryService.RetryServiceScheduler retryServiceScheduler = Mockito.mock(org.killbill.billing.payment.retry.BaseRetryService.RetryServiceScheduler.class);
+        final org.killbill.billing.util.callcontext.InternalCallContextFactory contextFactory = Mockito.mock(org.killbill.billing.util.callcontext.InternalCallContextFactory.class);
+        final org.killbill.billing.account.api.AccountInternalApi accountInternalApi = Mockito.mock(org.killbill.billing.account.api.AccountInternalApi.class);
+        final org.killbill.clock.Clock clock = Mockito.mock(org.killbill.clock.Clock.class);
+
+        final org.killbill.billing.payment.invoice.InvoicePaymentControlPluginApi api = new org.killbill.billing.payment.invoice.InvoicePaymentControlPluginApi(
+                paymentConfig, invoiceApi, tagUserApi, paymentDao, invoicePaymentControlDao, retryServiceScheduler, contextFactory, clock, accountInternalApi
+        );
+
+        final org.killbill.billing.control.plugin.api.PaymentControlContext paymentControlContext = Mockito.mock(org.killbill.billing.control.plugin.api.PaymentControlContext.class);
+        Mockito.when(paymentControlContext.getPaymentApiType()).thenReturn(org.killbill.billing.control.plugin.api.PaymentApiType.PAYMENT_TRANSACTION);
+        Mockito.when(paymentControlContext.getTransactionType()).thenReturn(org.killbill.billing.payment.api.TransactionType.PURCHASE);
+        Mockito.when(paymentControlContext.getAccountId()).thenReturn(accountId);
+        Mockito.when(paymentControlContext.getPaymentMethodId()).thenReturn(paymentMethodId);
+        Mockito.when(paymentControlContext.isApiPayment()).thenReturn(false);
+
+        final org.killbill.billing.payment.api.PluginProperty invoiceProperty = new org.killbill.billing.payment.api.PluginProperty("IPCD_INVOICE_ID", invoiceId.toString(), false);
+        final java.util.List<org.killbill.billing.payment.api.PluginProperty> pluginProperties = java.util.List.of(invoiceProperty);
+
+        final org.killbill.billing.callcontext.InternalCallContext internalContext = Mockito.mock(org.killbill.billing.callcontext.InternalCallContext.class);
+        Mockito.when(contextFactory.createInternalCallContext(Mockito.any(java.util.UUID.class), Mockito.any(org.killbill.billing.util.callcontext.CallContext.class))).thenReturn(internalContext);
+
+        Mockito.when(invoiceApi.getInvoiceStatus(Mockito.eq(invoiceId), Mockito.eq(internalContext))).thenReturn(org.killbill.billing.invoice.api.InvoiceStatus.COMMITTED);
+
+        final org.killbill.billing.invoice.api.Invoice invoice = Mockito.mock(org.killbill.billing.invoice.api.Invoice.class);
+        Mockito.when(invoice.getId()).thenReturn(invoiceId);
+        Mockito.when(invoice.getAccountId()).thenReturn(accountId);
+        Mockito.when(invoice.getBalance()).thenReturn(java.math.BigDecimal.TEN);
+        Mockito.when(invoiceApi.getInvoiceById(Mockito.eq(invoiceId), Mockito.eq(internalContext))).thenReturn(invoice);
+
+        final org.killbill.billing.account.api.Account account = Mockito.mock(org.killbill.billing.account.api.Account.class);
+        Mockito.when(account.getId()).thenReturn(accountId);
+        Mockito.when(accountInternalApi.getAccountById(Mockito.eq(accountId), Mockito.eq(internalContext))).thenReturn(account);
+
+        // Mock tags list to have PAID_BY_EXTERNAL
+        final org.killbill.billing.util.tag.Tag externalTag = Mockito.mock(org.killbill.billing.util.tag.Tag.class);
+        Mockito.when(externalTag.getTagDefinitionId()).thenReturn(org.killbill.billing.util.tag.dao.SystemTags.PAID_BY_EXTERNAL_TAG_DEFINITION_ID);
+        final java.util.List<org.killbill.billing.util.tag.Tag> tags = java.util.List.of(externalTag);
+        Mockito.when(tagUserApi.getTagsForAccount(Mockito.eq(accountId), Mockito.anyBoolean(), Mockito.eq(paymentControlContext))).thenReturn(tags);
+
+        // Mock external payment method plugin
+        final org.killbill.billing.payment.dao.PaymentMethodModelDao paymentMethod = Mockito.mock(org.killbill.billing.payment.dao.PaymentMethodModelDao.class);
+        Mockito.when(paymentMethod.getPluginName()).thenReturn(org.killbill.billing.payment.provider.ExternalPaymentProviderPlugin.PLUGIN_NAME);
+        Mockito.when(paymentDao.getPaymentMethod(Mockito.eq(paymentMethodId), Mockito.eq(internalContext))).thenReturn(paymentMethod);
+
+        // Call priorCall and assert it is aborted
+        final org.killbill.billing.control.plugin.api.PriorPaymentControlResult result = api.priorCall(paymentControlContext, pluginProperties);
+        Assert.assertTrue(result.isAborted());
+    }
 }

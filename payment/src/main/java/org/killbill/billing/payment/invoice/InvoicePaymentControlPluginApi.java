@@ -75,8 +75,11 @@ import org.killbill.billing.util.api.TagUserApi;
 import org.killbill.billing.util.callcontext.CallContext;
 import org.killbill.billing.util.callcontext.InternalCallContextFactory;
 import org.killbill.billing.util.config.definition.PaymentConfig;
+import org.killbill.billing.payment.dao.PaymentMethodModelDao;
+import org.killbill.billing.payment.provider.ExternalPaymentProviderPlugin;
 import org.killbill.billing.util.tag.ControlTagType;
 import org.killbill.billing.util.tag.Tag;
+import org.killbill.billing.util.tag.dao.SystemTags;
 import org.killbill.clock.Clock;
 import org.killbill.commons.utils.Preconditions;
 import org.killbill.commons.utils.annotation.VisibleForTesting;
@@ -357,6 +360,17 @@ public final class InvoicePaymentControlPluginApi implements PaymentControlPlugi
                 (invoice.getParentAccountId() != null))  { // Valid after we have unparented the child
                 log.info("Aborting payment: invoiceId='{}' is delegated to parent", invoice.getId());
                 return new DefaultPriorPaymentControlResult(true);
+            }
+
+            // Better support for customer-initiated external payment scenarios (Kill Bill issue #2040)
+            if (!paymentControlPluginContext.isApiPayment() && isAccountPaidByExternal(invoice.getAccountId(), paymentControlPluginContext)) {
+                if (paymentControlPluginContext.getPaymentMethodId() != null) {
+                    final PaymentMethodModelDao pm = paymentDao.getPaymentMethod(paymentControlPluginContext.getPaymentMethodId(), internalContext);
+                    if (pm != null && ExternalPaymentProviderPlugin.PLUGIN_NAME.equals(pm.getPluginName())) {
+                        log.info("Aborting automatic external payment: account has PAID_BY_EXTERNAL tag, invoiceId='{}'", invoiceId);
+                        return new DefaultPriorPaymentControlResult(true);
+                    }
+                }
             }
 
             // Is remaining amount > 0?
@@ -742,5 +756,11 @@ public final class InvoicePaymentControlPluginApi implements PaymentControlPlugi
     private boolean isAccountAutoPayOff(final UUID accountId, final CallContext callContext) {
         final List<Tag> accountTags = tagApi.getTagsForAccount(accountId, false, callContext);
         return ControlTagType.isAutoPayOff(accountTags.stream().map(Tag::getTagDefinitionId).collect(Collectors.toUnmodifiableList()));
+    }
+
+    private boolean isAccountPaidByExternal(final UUID accountId, final CallContext callContext) {
+        final List<Tag> accountTags = tagApi.getTagsForAccount(accountId, false, callContext);
+        return accountTags.stream()
+                .anyMatch(tag -> SystemTags.PAID_BY_EXTERNAL_TAG_DEFINITION_ID.equals(tag.getTagDefinitionId()));
     }
 }

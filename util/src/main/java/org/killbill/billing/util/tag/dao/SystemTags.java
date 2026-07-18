@@ -31,8 +31,14 @@ public class SystemTags {
     public static final UUID PARK_TAG_DEFINITION_ID = new UUID(1, 1);
     public static final String PARK_TAG_DEFINITION_NAME = "__PARK__";
 
+    public static final UUID PAID_BY_EXTERNAL_TAG_DEFINITION_ID = new UUID(2, 1);
+    public static final String PAID_BY_EXTERNAL_TAG_DEFINITION_NAME = "PAID_BY_EXTERNAL";
+
     // Note! TagSqlDao.sql.stg needs to be kept in sync (see userAndSystemTagDefinitions)
-    private static final List<TagDefinitionModelDao> SYSTEM_DEFINED_TAG_DEFINITIONS = List.of(new TagDefinitionModelDao(PARK_TAG_DEFINITION_ID, null, null, PARK_TAG_DEFINITION_NAME, "Accounts with invalid invoicing state", ObjectType.ACCOUNT.name()));
+    private static final List<TagDefinitionModelDao> SYSTEM_DEFINED_TAG_DEFINITIONS = List.of(
+            new TagDefinitionModelDao(PARK_TAG_DEFINITION_ID, null, null, PARK_TAG_DEFINITION_NAME, "Accounts with invalid invoicing state", ObjectType.ACCOUNT.name()),
+            new TagDefinitionModelDao(PAID_BY_EXTERNAL_TAG_DEFINITION_ID, null, null, PAID_BY_EXTERNAL_TAG_DEFINITION_NAME, "Indicates that the account has payments initiated externally, and invoices should stay unpaid until reconciled.", ObjectType.ACCOUNT.name())
+    );
 
     public static Collection<TagDefinitionModelDao> get(final boolean includeSystemTags) {
         final Collection<TagDefinitionModelDao> all = includeSystemTags ?

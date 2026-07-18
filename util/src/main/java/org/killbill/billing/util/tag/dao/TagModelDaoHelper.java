@@ -25,6 +25,9 @@ public class TagModelDaoHelper {
     private TagModelDaoHelper() {}
 
     public static boolean isControlTag(final String definitionName) {
+        if ("PAID_BY_EXTERNAL".equals(definitionName)) {
+            return true;
+        }
         for (final ControlTagType controlTagName : ControlTagType.values()) {
             if (controlTagName.toString().equals(definitionName)) {
                 return true;
@@ -35,6 +38,9 @@ public class TagModelDaoHelper {
     }
 
     public static boolean isControlTag(final UUID tagDefinitionId) {
+        if (SystemTags.PAID_BY_EXTERNAL_TAG_DEFINITION_ID.equals(tagDefinitionId)) {
+            return true;
+        }
         for (final ControlTagType controlTag : ControlTagType.values()) {
             if (controlTag.getId().equals(tagDefinitionId)) {
                 return true;
