@@ -19,6 +19,7 @@
 package org.killbill.billing.jaxrs.resources;
 
 import java.math.BigDecimal;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
@@ -43,6 +44,7 @@ import jakarta.ws.rs.core.Response;
 import jakarta.ws.rs.core.Response.Status;
 import jakarta.ws.rs.core.UriInfo;
 
+import org.killbill.billing.ErrorCode;
 import org.killbill.billing.ObjectType;
 import org.killbill.billing.account.api.Account;
 import org.killbill.billing.account.api.AccountApiException;
@@ -59,9 +61,13 @@ import org.killbill.billing.jaxrs.json.InvoicePaymentJson;
 import org.killbill.billing.jaxrs.json.InvoicePaymentTransactionJson;
 import org.killbill.billing.jaxrs.json.PaymentTransactionJson;
 import org.killbill.billing.jaxrs.json.TagJson;
+import org.killbill.billing.invoice.api.Invoice;
+import org.killbill.billing.invoice.api.InvoiceApiException;
+import org.killbill.billing.jaxrs.json.ExternalPaymentJson;
 import org.killbill.billing.jaxrs.util.Context;
 import org.killbill.billing.jaxrs.util.JaxrsUriBuilder;
 import org.killbill.billing.payment.api.InvoicePaymentApi;
+import java.util.stream.Collectors;
 import org.killbill.billing.payment.api.Payment;
 import org.killbill.billing.payment.api.PaymentApi;
 import org.killbill.billing.payment.api.PaymentApiException;
@@ -505,6 +511,115 @@ public class InvoicePaymentResource extends JaxRsResourceBase {
                                              @jakarta.ws.rs.core.Context final HttpServletRequest request) throws TagApiException {
         return super.deleteTags(id, tagList,
                                 context.createCallContextNoAccountId(createdBy, reason, comment, request));
+    }
+
+    @TimedResource
+    @POST
+    @Path("/" + "recordExternalPayment")
+    @Consumes(APPLICATION_JSON)
+    @Produces(APPLICATION_JSON)
+    @Operation(summary = "Record an external payment, optionally allocated across multiple invoices")
+    @ApiResponses(value = {@ApiResponse(responseCode = "201", description = "Recorded external payment successfully", content = @Content(mediaType = "application/json", array = @ArraySchema(schema = @Schema(implementation = InvoicePaymentJson.class)))),
+                           @ApiResponse(responseCode = "400", description = "Invalid request or mismatch in account/invoice"),
+                           @ApiResponse(responseCode = "404", description = "Account not found")})
+    public Response recordExternalPayment(final ExternalPaymentJson json,
+                                          @QueryParam(QUERY_PLUGIN_PROPERTY) final List<String> pluginPropertiesString,
+                                          @HeaderParam(HDR_CREATED_BY) final String createdBy,
+                                          @HeaderParam(HDR_REASON) final String reason,
+                                          @HeaderParam(HDR_COMMENT) final String comment,
+                                          @jakarta.ws.rs.core.Context final UriInfo uriInfo,
+                                          @jakarta.ws.rs.core.Context final HttpServletRequest request) throws AccountApiException, PaymentApiException, InvoiceApiException {
+        verifyNonNullOrEmpty(json, "ExternalPaymentJson body should be specified");
+        verifyNonNullOrEmpty(json.getAccountId(), "ExternalPaymentJson accountId needs to be set");
+        verifyNonNullOrEmpty(json.getAmount(), "ExternalPaymentJson amount needs to be set");
+        verifyNonNullOrEmpty(json.getCurrency(), "ExternalPaymentJson currency needs to be set");
+
+        final CallContext callContext = context.createCallContextNoAccountId(createdBy, reason, comment, request);
+        final TenantContext tenantContext = context.createTenantContextNoAccountId(request);
+
+        final Account account = accountUserApi.getAccountById(json.getAccountId(), callContext);
+        final UUID paymentMethodId = json.getPaymentMethodId();
+
+        final Iterable<PluginProperty> pluginProperties = extractPluginProperties(pluginPropertiesString);
+
+        // Determine the allocations
+        final Map<UUID, BigDecimal> allocations = new java.util.HashMap<>();
+        if (json.getAllocations() != null && !json.getAllocations().isEmpty()) {
+            allocations.putAll(json.getAllocations());
+        } else {
+            // Auto-allocate across unpaid invoices from oldest to newest
+            final Collection<Invoice> unpaidInvoices = invoiceApi.getUnpaidInvoicesByAccountId(account.getId(), null, clock.getUTCToday(), tenantContext);
+            final List<Invoice> sortedInvoices = unpaidInvoices.stream()
+                                                               .sorted(java.util.Comparator.comparing(Invoice::getInvoiceDate))
+                                                               .collect(Collectors.toList());
+
+            BigDecimal remainingAmount = json.getAmount();
+            for (final Invoice unpaidInvoice : sortedInvoices) {
+                if (remainingAmount.compareTo(BigDecimal.ZERO) <= 0) {
+                    break;
+                }
+                final BigDecimal allocAmount = unpaidInvoice.getBalance().min(remainingAmount);
+                if (allocAmount.compareTo(BigDecimal.ZERO) > 0) {
+                    allocations.put(unpaidInvoice.getId(), allocAmount);
+                    remainingAmount = remainingAmount.subtract(allocAmount);
+                }
+            }
+        }
+
+        // Compute the total allocated amount to see if there's any overpayment / excess
+        final BigDecimal totalAllocated = allocations.values().stream().reduce(BigDecimal.ZERO, BigDecimal::add);
+        final BigDecimal excess = json.getAmount().subtract(totalAllocated);
+
+        if (allocations.isEmpty()) {
+            // No allocations and no unpaid invoices. Find any latest invoice on the account to attach the payment to.
+            final List<Invoice> allInvoices = invoiceApi.getInvoicesByAccount(account.getId(), false, false, true, tenantContext);
+            if (allInvoices.isEmpty()) {
+                throw new InvoiceApiException(ErrorCode.INVOICE_NOT_FOUND, "No invoices exist for this account to record payment against.");
+            }
+            final Invoice latestInvoice = allInvoices.stream()
+                                                     .sorted(java.util.Comparator.comparing(Invoice::getInvoiceDate).reversed())
+                                                     .findFirst().get();
+            allocations.put(latestInvoice.getId(), json.getAmount());
+        } else if (excess.compareTo(BigDecimal.ZERO) > 0) {
+            // There is excess/overpayment. Attach it to one of the allocated invoices so it creates CBA/account credit.
+            final UUID firstInvoiceId = allocations.entrySet().iterator().next().getKey();
+            allocations.put(firstInvoiceId, allocations.get(firstInvoiceId).add(excess));
+        }
+
+        // Record the payments for each allocation
+        final List<InvoicePaymentJson> recordedPayments = new java.util.ArrayList<>();
+        final PaymentOptions paymentOptions = createInvoicePaymentControlPluginApiPaymentOptions(true); // External payment options
+
+        for (final Map.Entry<UUID, BigDecimal> entry : allocations.entrySet()) {
+            final UUID invoiceId = entry.getKey();
+            final BigDecimal amountToPay = entry.getValue();
+
+            // We generate unique keys per payment to avoid conflict, using the specified key as base/prefix if provided
+            final String basePaymentKey = json.getPaymentExternalKey() != null ? json.getPaymentExternalKey() : UUIDs.randomUUID().toString();
+            final String paymentExternalKey = basePaymentKey + "-" + invoiceId.toString();
+
+            final String baseTransKey = json.getTransactionExternalKey() != null ? json.getTransactionExternalKey() : UUIDs.randomUUID().toString();
+            final String transactionExternalKey = baseTransKey + "-" + invoiceId.toString();
+
+            final InvoicePayment result = invoicePaymentApi.createPurchaseForInvoicePayment(account,
+                                                                                            invoiceId,
+                                                                                            paymentMethodId,
+                                                                                            null,
+                                                                                            amountToPay,
+                                                                                            json.getCurrency(),
+                                                                                            json.getEffectiveDate(),
+                                                                                            paymentExternalKey,
+                                                                                            transactionExternalKey,
+                                                                                            pluginProperties,
+                                                                                            paymentOptions,
+                                                                                            callContext);
+            if (result != null) {
+                final Payment payment = paymentApi.getPayment(result.getPaymentId(), false, false, pluginProperties, tenantContext);
+                recordedPayments.add(new InvoicePaymentJson(payment, invoiceId, null));
+            }
+        }
+
+        return Response.status(Response.Status.CREATED).entity(recordedPayments).build();
     }
 
     @Override

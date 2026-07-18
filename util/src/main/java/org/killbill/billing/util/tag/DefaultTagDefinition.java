@@ -143,6 +143,9 @@ public class DefaultTagDefinition extends EntityBase implements TagDefinition {
         if (!isControlTag) {
             return List.of(ObjectType.values());
         }
+        if (org.killbill.billing.util.tag.dao.SystemTags.PAID_BY_EXTERNAL_TAG_DEFINITION_ID.equals(id)) {
+            return List.of(ObjectType.ACCOUNT);
+        }
         for (final ControlTagType cur : ControlTagType.values()) {
             if (cur.getId().equals(id)) {
                 return cur.getApplicableObjectTypes();
