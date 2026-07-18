@@ -58,6 +58,7 @@ import org.killbill.billing.invoice.api.InvoicePaymentStatus;
 import org.killbill.billing.invoice.api.InvoicePaymentType;
 import org.killbill.billing.invoice.api.InvoiceStatus;
 import org.killbill.billing.payment.api.PaymentApiException;
+import org.killbill.billing.payment.api.InvoicePaymentInternalApi;
 import org.killbill.billing.payment.api.PluginProperty;
 import org.killbill.billing.payment.api.TransactionStatus;
 import org.killbill.billing.payment.api.TransactionType;
@@ -170,32 +171,21 @@ public final class InvoicePaymentControlPluginApi implements PaymentControlPlugi
             final InvoicePaymentStatus status = toInvoicePaymentStatus(paymentTransactionModelDao.getTransactionStatus());
             switch (transactionType) {
                 case PURCHASE:
-                    final UUID invoiceId = getInvoiceId(pluginProperties);
-                    existingInvoicePayment = invoiceApi.getInvoicePaymentForAttempt(paymentControlContext.getPaymentId(), internalContext);
-                    if (existingInvoicePayment != null && existingInvoicePayment.getStatus() == InvoicePaymentStatus.SUCCESS) {
-                        // Only one successful purchase per payment (the invoice could be linked to multiple successful payments though)
-                        log.info("onSuccessCall was already completed for purchase paymentId='{}'", paymentControlContext.getPaymentId());
-                    } else {
-                        final BigDecimal invoicePaymentAmount;
-                        if (paymentControlContext.getCurrency() == paymentControlContext.getProcessedCurrency()) {
-                            invoicePaymentAmount = paymentControlContext.getProcessedAmount();
-                        } else {
-                            log.warn("processedCurrency='{}' of invoice paymentId='{}' doesn't match invoice currency='{}', assuming it is a full payment", paymentControlContext.getProcessedCurrency(), paymentControlContext.getPaymentId(), paymentControlContext.getCurrency());
-                            invoicePaymentAmount = paymentControlContext.getAmount();
+                    final PluginProperty invoiceAllocationsProperty = getPluginProperty(pluginProperties, InvoicePaymentInternalApi.IPCD_INVOICE_ALLOCATIONS);
+                    final BigDecimal legacyAmount = paymentControlContext.getCurrency() == paymentControlContext.getProcessedCurrency() ?
+                                                    paymentControlContext.getProcessedAmount() : paymentControlContext.getAmount();
+                    final Map<UUID, BigDecimal> allocations = invoiceAllocationsProperty == null ?
+                                                              Collections.singletonMap(getInvoiceId(pluginProperties), legacyAmount) :
+                                                              getInvoiceAllocations(pluginProperties);
+                    for (final Entry<UUID, BigDecimal> allocation : allocations.entrySet()) {
+                        final boolean alreadyRecorded = invoiceApi.getInvoicePaymentsByInvoice(allocation.getKey(), internalContext).stream()
+                                .anyMatch(payment -> paymentControlContext.getTransactionExternalKey().equals(payment.getPaymentCookieId()) && payment.getStatus() == InvoicePaymentStatus.SUCCESS);
+                        if (!alreadyRecorded) {
+                            invoiceApi.recordPaymentAttemptCompletion(allocation.getKey(), allocation.getValue(), paymentControlContext.getCurrency(),
+                                                                      paymentControlContext.getProcessedCurrency(), paymentControlContext.getPaymentId(),
+                                                                      paymentControlContext.getAttemptPaymentId(), paymentControlContext.getTransactionExternalKey(),
+                                                                      paymentControlContext.getCreatedDate(), status, internalContext);
                         }
-
-                        log.debug("Notifying invoice of paymentId='{}', amount='{}', currency='{}', invoiceId='{}', invoicePaymentStatus='{}'", paymentControlContext.getPaymentId(), invoicePaymentAmount, paymentControlContext.getCurrency(), invoiceId, status);
-
-                        invoiceApi.recordPaymentAttemptCompletion(invoiceId,
-                                                                  invoicePaymentAmount,
-                                                                  paymentControlContext.getCurrency(),
-                                                                  paymentControlContext.getProcessedCurrency(),
-                                                                  paymentControlContext.getPaymentId(),
-                                                                  paymentControlContext.getAttemptPaymentId(),
-                                                                  paymentControlContext.getTransactionExternalKey(),
-                                                                  paymentControlContext.getCreatedDate(),
-                                                                  status,
-                                                                  internalContext);
                     }
                     break;
 
@@ -271,20 +261,14 @@ public final class InvoicePaymentControlPluginApi implements PaymentControlPlugi
         DateTime nextRetryDate = null;
         switch (transactionType) {
             case PURCHASE:
-                final UUID invoiceId = getInvoiceId(pluginProperties);
+                final Map<UUID, BigDecimal> allocations = getInvoiceAllocations(pluginProperties);
                 try {
-                    log.debug("Notifying invoice of failed payment: id={}, amount={}, currency={}, invoiceId={}", paymentControlContext.getPaymentId(), paymentControlContext.getAmount(), paymentControlContext.getCurrency(), invoiceId);
-                    invoiceApi.recordPaymentAttemptCompletion(invoiceId,
-                                                              BigDecimal.ZERO,
-                                                              paymentControlContext.getCurrency(),
-                                                              // processed currency may be null so we use currency; processed currency will be updated if/when payment succeeds
-                                                              paymentControlContext.getCurrency(),
-                                                              paymentControlContext.getPaymentId(),
-                                                              paymentControlContext.getAttemptPaymentId(),
-                                                              paymentControlContext.getTransactionExternalKey(),
-                                                              paymentControlContext.getCreatedDate(),
-                                                              InvoicePaymentStatus.INIT,
-                                                              internalContext);
+                    for (final UUID invoiceId : allocations.keySet()) {
+                        invoiceApi.recordPaymentAttemptCompletion(invoiceId, BigDecimal.ZERO, paymentControlContext.getCurrency(),
+                                                                  paymentControlContext.getCurrency(), paymentControlContext.getPaymentId(),
+                                                                  paymentControlContext.getAttemptPaymentId(), paymentControlContext.getTransactionExternalKey(),
+                                                                  paymentControlContext.getCreatedDate(), InvoicePaymentStatus.INIT, internalContext);
+                    }
                 } catch (final InvoiceApiException e) {
                     log.error("InvoicePaymentControlPluginApi onFailureCall failed ton update invoice for attemptId = " + paymentControlContext.getAttemptPaymentId() + ", transactionType  = " + transactionType, e);
                 }
@@ -338,8 +322,52 @@ public final class InvoicePaymentControlPluginApi implements PaymentControlPlugi
         return UUID.fromString((String) invoiceProp.getValue());
     }
 
+    @SuppressWarnings("unchecked")
+    private Map<UUID, BigDecimal> getInvoiceAllocations(final Iterable<PluginProperty> pluginProperties) throws PaymentControlApiException {
+        final PluginProperty allocationsProperty = getPluginProperty(pluginProperties, InvoicePaymentInternalApi.IPCD_INVOICE_ALLOCATIONS);
+        if (allocationsProperty == null) {
+            return Collections.singletonMap(getInvoiceId(pluginProperties), BigDecimal.ZERO);
+        }
+        if (!(allocationsProperty.getValue() instanceof Map)) {
+            throw new PaymentControlApiException("Invalid invoice allocations");
+        }
+        return (Map<UUID, BigDecimal>) allocationsProperty.getValue();
+    }
+
+    private PriorPaymentControlResult getExternalAllocationPurchaseResult(final PaymentControlContext context,
+                                                                          final Iterable<PluginProperty> pluginProperties,
+                                                                          final InternalCallContext internalContext) throws InvoiceApiException, PaymentControlApiException {
+        final Map<UUID, BigDecimal> allocations = getInvoiceAllocations(pluginProperties);
+        BigDecimal total = BigDecimal.ZERO;
+        BigDecimal totalBalance = BigDecimal.ZERO;
+        for (final Entry<UUID, BigDecimal> allocation : allocations.entrySet()) {
+            if (allocation.getValue() == null || allocation.getValue().compareTo(BigDecimal.ZERO) <= 0) {
+                throw new PaymentControlApiException("Invoice allocation amounts must be positive");
+            }
+            final Invoice invoice = invoiceApi.getInvoiceById(allocation.getKey(), internalContext);
+            if (!InvoiceStatus.COMMITTED.equals(invoice.getStatus()) || !invoice.getAccountId().equals(context.getAccountId()) || invoice.getCurrency() != context.getCurrency()) {
+                throw new PaymentControlApiException("Invoice allocation does not belong to the account or cannot be paid");
+            }
+            total = total.add(allocation.getValue());
+            totalBalance = totalBalance.add(invoice.getBalance().max(BigDecimal.ZERO));
+            invoiceApi.recordPaymentAttemptInit(invoice.getId(), allocation.getValue(), context.getCurrency(), context.getCurrency(),
+                                                context.getPaymentId(), context.getAttemptPaymentId(), context.getTransactionExternalKey(),
+                                                context.getCreatedDate(), internalContext);
+        }
+        if (total.compareTo(context.getAmount()) != 0) {
+            throw new PaymentControlApiException("Invoice allocations must equal the payment amount");
+        }
+        // Amount above the combined balance is intentional: invoice bookkeeping turns it into CBA.
+        log.debug("Recording external payment amount='{}' against invoice balance='{}'", total, totalBalance);
+        return new DefaultPriorPaymentControlResult(false, total);
+    }
+
     private PriorPaymentControlResult getPluginPurchaseResult(final PaymentControlContext paymentControlPluginContext, final Iterable<PluginProperty> pluginProperties, final InternalCallContext internalContext) throws PaymentControlApiException {
         try {
+            final PluginProperty allocationsProperty = getPluginProperty(pluginProperties, InvoicePaymentInternalApi.IPCD_INVOICE_ALLOCATIONS);
+            if (allocationsProperty != null) {
+                return getExternalAllocationPurchaseResult(paymentControlPluginContext, pluginProperties, internalContext);
+            }
             final UUID invoiceId = getInvoiceId(pluginProperties);
 
             // Optimize case where we have a Draft invoice to avoid pulling the whole thing.

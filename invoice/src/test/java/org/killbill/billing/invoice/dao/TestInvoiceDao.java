@@ -313,6 +313,22 @@ public class TestInvoiceDao extends InvoiceTestSuiteWithEmbeddedDB {
     }
 
     @Test(groups = "slow")
+    public void testOverPaymentCreatesCBA() throws InvoiceApiException, EntityPersistenceException {
+        final UUID accountId = account.getId();
+        final Invoice invoice = new DefaultInvoice(accountId, clock.getUTCToday(), clock.getUTCToday(), Currency.USD);
+        invoice.addInvoiceItem(new FixedPriceInvoiceItem(invoice.getId(), accountId, UUID.randomUUID(), UUID.randomUUID(), "product", "plan", "phase", null,
+                                                         clock.getUTCToday(), BigDecimal.TEN, Currency.USD));
+        invoiceUtil.createInvoice(invoice, context);
+
+        final DefaultInvoicePayment payment = new DefaultInvoicePayment(InvoicePaymentType.ATTEMPT, UUID.randomUUID(), invoice.getId(), clock.getUTCNow(),
+                                                                        new BigDecimal("15.00"), Currency.USD, Currency.USD, "overpayment-cookie", InvoicePaymentStatus.SUCCESS);
+        invoiceDao.notifyOfPaymentCompletion(new InvoicePaymentModelDao(payment), UUID.randomUUID(), context);
+
+        assertEquals(invoiceDao.getAccountBalance(accountId, context).compareTo(new BigDecimal("-5.00")), 0);
+        assertEquals(invoiceDao.getAccountCBA(accountId, context).compareTo(new BigDecimal("5.00")), 0);
+    }
+
+    @Test(groups = "slow")
     public void testRetrievalForNonExistentInvoiceOrInvoiceItem() throws InvoiceApiException {
         try {
             invoiceDao.getById(UUID.randomUUID(), context);

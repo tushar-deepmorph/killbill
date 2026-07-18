@@ -66,6 +66,7 @@ public class TestInvoiceResource extends JaxrsTestSuiteNoDB {
                 null,
                 null,
                 null,
+                null,
                 auditUserApi,
                 null,
                 context

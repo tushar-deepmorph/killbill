@@ -18,6 +18,7 @@
 
 package org.killbill.billing.jaxrs.resources;
 
+import java.math.BigDecimal;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -84,10 +85,13 @@ import org.killbill.billing.jaxrs.json.InvoiceDryRunJson;
 import org.killbill.billing.jaxrs.json.InvoiceItemJson;
 import org.killbill.billing.jaxrs.json.InvoiceJson;
 import org.killbill.billing.jaxrs.json.InvoicePaymentJson;
+import org.killbill.billing.jaxrs.json.ExternalInvoicePaymentJson;
+import org.killbill.billing.jaxrs.json.PaymentJson;
 import org.killbill.billing.jaxrs.json.TagJson;
 import org.killbill.billing.jaxrs.util.Context;
 import org.killbill.billing.jaxrs.util.JaxrsUriBuilder;
 import org.killbill.billing.payment.api.InvoicePaymentApi;
+import org.killbill.billing.payment.api.ExternalInvoicePaymentApi;
 import org.killbill.billing.payment.api.Payment;
 import org.killbill.billing.payment.api.PaymentApi;
 import org.killbill.billing.payment.api.PaymentApiException;
@@ -140,6 +144,7 @@ public class InvoiceResource extends JaxRsResourceBase {
 
     private final InvoiceUserApi invoiceApi;
     private final TenantUserApi tenantApi;
+    private final ExternalInvoicePaymentApi externalInvoicePaymentApi;
     private final Locale defaultLocale;
 
     @Inject
@@ -147,6 +152,7 @@ public class InvoiceResource extends JaxRsResourceBase {
                            final InvoiceUserApi invoiceApi,
                            final PaymentApi paymentApi,
                            final InvoicePaymentApi invoicePaymentApi,
+                           final ExternalInvoicePaymentApi externalInvoicePaymentApi,
                            final Clock clock,
                            final JaxrsUriBuilder uriBuilder,
                            final TagUserApi tagUserApi,
@@ -156,8 +162,40 @@ public class InvoiceResource extends JaxRsResourceBase {
                            final Context context) {
         super(uriBuilder, tagUserApi, customFieldUserApi, auditUserApi, accountUserApi, paymentApi, invoicePaymentApi, null, clock, context);
         this.invoiceApi = invoiceApi;
+        this.externalInvoicePaymentApi = externalInvoicePaymentApi;
         this.tenantApi = tenantApi;
         this.defaultLocale = Locale.getDefault();
+    }
+
+    @TimedResource
+    @POST
+    @Produces(APPLICATION_JSON)
+    @Consumes(APPLICATION_JSON)
+    @Path("/payments/external")
+    @Operation(summary = "Record a customer-initiated external payment against one or more invoices")
+    public Response recordExternalPayment(final ExternalInvoicePaymentJson payment,
+                                          @QueryParam(QUERY_PLUGIN_PROPERTY) final List<String> pluginPropertiesString,
+                                          @HeaderParam(HDR_CREATED_BY) final String createdBy,
+                                          @HeaderParam(HDR_REASON) final String reason,
+                                          @HeaderParam(HDR_COMMENT) final String comment,
+                                          @jakarta.ws.rs.core.Context final HttpServletRequest request) throws AccountApiException, PaymentApiException {
+        verifyNonNullOrEmpty(payment, "ExternalInvoicePaymentJson body should be specified");
+        verifyNonNullOrEmpty(payment.getAccountId(), "accountId needs to be set");
+        Preconditions.checkArgument(payment.getAllocations() != null && !payment.getAllocations().isEmpty(), "allocations need to be set");
+
+        final java.util.LinkedHashMap<UUID, BigDecimal> allocations = new java.util.LinkedHashMap<>();
+        for (final ExternalInvoicePaymentJson.Allocation allocation : payment.getAllocations()) {
+            verifyNonNullOrEmpty(allocation.getInvoiceId(), "invoiceId needs to be set");
+            Preconditions.checkArgument(allocation.getAmount() != null && allocation.getAmount().compareTo(BigDecimal.ZERO) > 0, "allocation amount needs to be positive");
+            Preconditions.checkArgument(allocations.put(allocation.getInvoiceId(), allocation.getAmount()) == null, "invoiceId can only be allocated once");
+        }
+
+        final CallContext callContext = context.createCallContextNoAccountId(createdBy, reason, comment, request);
+        final Account account = accountUserApi.getAccountById(payment.getAccountId(), callContext);
+        final Payment result = externalInvoicePaymentApi.recordExternalPayment(account, allocations, payment.getEffectiveDate(),
+                                                                                payment.getPaymentExternalKey(), payment.getTransactionExternalKey(),
+                                                                                extractPluginProperties(pluginPropertiesString), callContext);
+        return Response.status(Status.CREATED).entity(new PaymentJson(result, null)).build();
     }
 
     /**

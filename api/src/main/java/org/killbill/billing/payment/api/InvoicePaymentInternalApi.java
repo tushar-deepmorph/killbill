@@ -18,6 +18,7 @@
 package org.killbill.billing.payment.api;
 
 import java.math.BigDecimal;
+import java.util.Map;
 import java.util.UUID;
 
 import org.joda.time.DateTime;
@@ -27,6 +28,18 @@ import org.killbill.billing.catalog.api.Currency;
 import org.killbill.billing.invoice.api.InvoicePayment;
 
 public interface InvoicePaymentInternalApi {
+
+    String IPCD_INVOICE_ALLOCATIONS = "IPCD_INVOICE_ALLOCATIONS";
+
+    Payment createPurchaseForInvoicePayments(boolean isApiPayment,
+                                             Account account,
+                                             Map<UUID, BigDecimal> invoiceAllocations,
+                                             DateTime effectiveDate,
+                                             String paymentExternalKey,
+                                             String paymentTransactionExternalKey,
+                                             Iterable<PluginProperty> properties,
+                                             PaymentOptions paymentOptions,
+                                             InternalCallContext context) throws PaymentApiException;
 
     public InvoicePayment createPurchaseForInvoicePayment(boolean isApiPayment,
                                                           Account account,
