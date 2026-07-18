@@ -77,6 +77,7 @@ import org.killbill.billing.util.callcontext.InternalCallContextFactory;
 import org.killbill.billing.util.config.definition.PaymentConfig;
 import org.killbill.billing.util.tag.ControlTagType;
 import org.killbill.billing.util.tag.Tag;
+import org.killbill.billing.util.tag.dao.SystemTags;
 import org.killbill.clock.Clock;
 import org.killbill.commons.utils.Preconditions;
 import org.killbill.commons.utils.annotation.VisibleForTesting;
@@ -376,6 +377,15 @@ public final class InvoicePaymentControlPluginApi implements PaymentControlPlugi
             // Are we in auto-payoff (do the check as soon as possible -- https://github.com/killbill/killbill/issues/812)?
             if (insert_AUTO_PAY_OFF_ifRequired(paymentControlPluginContext, requestedAmount)) {
                 log.info("Aborting payment: invoiceId='{}' is AUTO_PAY_OFF", invoice.getId());
+                return new DefaultPriorPaymentControlResult(true);
+            }
+
+            // Is the account paid by the customer through an external channel (https://github.com/killbill/killbill/issues/2040)?
+            // If so, do not generate an automatic payment: leave the invoice unpaid so that overdue and subscription
+            // blocking rules apply. The actual payment is recorded later, out of band, through the record-external-payment API
+            // (which is an API payment, hence not aborted here). Unlike AUTO_PAY_OFF, nothing is scheduled for later retry.
+            if (!paymentControlPluginContext.isApiPayment() && isAccountPaidByExternal(paymentControlPluginContext.getAccountId(), paymentControlPluginContext)) {
+                log.info("Aborting automatic payment: invoiceId='{}' account is PAID_BY_EXTERNAL", invoice.getId());
                 return new DefaultPriorPaymentControlResult(true);
             }
 
@@ -742,5 +752,10 @@ public final class InvoicePaymentControlPluginApi implements PaymentControlPlugi
     private boolean isAccountAutoPayOff(final UUID accountId, final CallContext callContext) {
         final List<Tag> accountTags = tagApi.getTagsForAccount(accountId, false, callContext);
         return ControlTagType.isAutoPayOff(accountTags.stream().map(Tag::getTagDefinitionId).collect(Collectors.toUnmodifiableList()));
+    }
+
+    private boolean isAccountPaidByExternal(final UUID accountId, final CallContext callContext) {
+        final List<Tag> accountTags = tagApi.getTagsForAccount(accountId, false, callContext);
+        return accountTags.stream().anyMatch(tag -> SystemTags.PAID_BY_EXTERNAL_TAG_DEFINITION_ID.equals(tag.getTagDefinitionId()));
     }
 }
